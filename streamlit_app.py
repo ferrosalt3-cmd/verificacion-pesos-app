@@ -110,6 +110,28 @@ def fit_text(c, text, max_width, base_font="Helvetica", base_size=10, min_size=7
     return base_font, min_size
 
 
+def last_valid_weight(pesos: list[float | None], up_to_idx: int) -> float | None:
+    """Último peso válido antes (o igual) a up_to_idx-1."""
+    for i in range(min(up_to_idx - 1, 119), -1, -1):
+        p = pesos[i]
+        if p is None:
+            continue
+        if isinstance(p, float) and np.isnan(p):
+            continue
+        return float(p)
+    return None
+
+
+def parse_weight_text(raw: str) -> tuple[float | None, str]:
+    raw = (raw or "").strip()
+    if raw == "":
+        return None, "Escribe un peso antes de guardar."
+    raw2 = raw.replace(",", ".")
+    if not re.fullmatch(r"\d+(\.\d+)?", raw2):
+        return None, "Formato inválido. Ej: 25.158"
+    return float(raw2), ""
+
+
 # -------------------- PDF (A4 profesional) --------------------
 def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> bytes:
     buffer = io.BytesIO()
@@ -238,6 +260,8 @@ def init_state():
         st.session_state.peso_txt = ""
     if "fast_error" not in st.session_state:
         st.session_state.fast_error = ""
+    if "fast_info" not in st.session_state:
+        st.session_state.fast_info = ""
     if "table_df" not in st.session_state:
         st.session_state.table_df = pesos_to_df(st.session_state.pesos)
 
@@ -245,23 +269,54 @@ def init_state():
 # -------------------- Callbacks --------------------
 def on_fast_save():
     st.session_state.fast_error = ""
+    st.session_state.fast_info = ""
+
+    # si ya está lleno, no guardar
+    if st.session_state.idx >= 120:
+        st.session_state.fast_info = "✅ Registro lleno (120/120)."
+        return
+
     idx = st.session_state.idx
-    raw = (st.session_state.peso_txt or "").strip()
-
-    if raw == "":
-        st.session_state.fast_error = "Escribe un peso antes de guardar."
+    val, err = parse_weight_text(st.session_state.peso_txt)
+    if err:
+        st.session_state.fast_error = err
         return
 
-    raw2 = raw.replace(",", ".")
-    if not re.fullmatch(r"\d+(\.\d+)?", raw2):
-        st.session_state.fast_error = "Formato inválido. Ej: 25.158"
-        return
-
-    val = float(raw2)
-    st.session_state.pesos[idx] = val
+    st.session_state.pesos[idx] = float(val)
 
     if st.session_state.idx < 119:
         st.session_state.idx += 1
+    else:
+        # llegó a 120
+        st.session_state.idx = 120
+        st.session_state.fast_info = "✅ Registro lleno (120/120)."
+
+    st.session_state.peso_txt = ""
+    st.session_state.table_df = pesos_to_df(st.session_state.pesos)
+
+
+def on_repeat_last():
+    st.session_state.fast_error = ""
+    st.session_state.fast_info = ""
+
+    # si ya está lleno, no repetir
+    if st.session_state.idx >= 120:
+        st.session_state.fast_info = "✅ Registro lleno (120/120)."
+        return
+
+    last_w = last_valid_weight(st.session_state.pesos, st.session_state.idx)
+    if last_w is None:
+        st.session_state.fast_error = "No hay un peso anterior para repetir."
+        return
+
+    idx = st.session_state.idx
+    st.session_state.pesos[idx] = float(last_w)
+
+    if st.session_state.idx < 119:
+        st.session_state.idx += 1
+    else:
+        st.session_state.idx = 120
+        st.session_state.fast_info = "✅ Registro lleno (120/120)."
 
     st.session_state.peso_txt = ""
     st.session_state.table_df = pesos_to_df(st.session_state.pesos)
@@ -273,11 +328,11 @@ def on_apply_table():
 
 
 def on_clear():
-    # Limpieza total SIN error (callback)
     st.session_state.pesos = [None] * 120
     st.session_state.idx = 0
     st.session_state.peso_txt = ""
     st.session_state.fast_error = ""
+    st.session_state.fast_info = ""
     st.session_state.table_df = pesos_to_df(st.session_state.pesos)
 
 
@@ -315,56 +370,82 @@ def main():
         st.subheader("Captura rápida (escribe el peso y presiona Enter)")
 
         idx = st.session_state.idx
-        n_actual = idx + 1
+        # mostramos 120 cuando esté lleno
+        n_actual = 120 if idx >= 120 else idx + 1
 
         colA, colB, colC = st.columns([1, 2, 1])
         with colA:
             st.metric("N° actual", n_actual)
 
         with colB:
-            with st.form("fast_form", clear_on_submit=False):
-                st.text_input("Peso", key="peso_txt", placeholder="Ej: 25.158")
-                st.form_submit_button("Guardar (Enter)", on_click=on_fast_save)
+            # Si está lleno, deshabilitamos el input
+            full = st.session_state.idx >= 120
 
-            components.html(
-                """
-                <script>
-                  const inputs = window.parent.document.querySelectorAll('input[type="text"]');
-                  for (const i of inputs) {
-                    const aria = i.getAttribute('aria-label') || '';
-                    if (aria.trim() === 'Peso') {
-                      i.setAttribute('inputmode', 'decimal');
-                      i.setAttribute('pattern', '[0-9]*[\\.,]?[0-9]*');
-                      i.focus();
-                      i.select();
-                    }
-                  }
-                </script>
-                """,
-                height=0,
-            )
+            with st.form("fast_form", clear_on_submit=False):
+                st.text_input(
+                    "Peso",
+                    key="peso_txt",
+                    placeholder="Ej: 25.158",
+                    disabled=full,
+                )
+                cbtn1, cbtn2 = st.columns([1, 1])
+                with cbtn1:
+                    st.form_submit_button("Guardar (Enter)", on_click=on_fast_save, disabled=full)
+                with cbtn2:
+                    st.form_submit_button("Repetir último", on_click=on_repeat_last, disabled=full)
+
+            # teclado numérico + focus (solo si no está lleno)
+            if not full:
+                components.html(
+                    """
+                    <script>
+                      const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+                      for (const i of inputs) {
+                        const aria = i.getAttribute('aria-label') || '';
+                        if (aria.trim() === 'Peso') {
+                          i.setAttribute('inputmode', 'decimal');
+                          i.setAttribute('pattern', '[0-9]*[\\.,]?[0-9]*');
+                          i.focus();
+                          i.select();
+                        }
+                      }
+                    </script>
+                    """,
+                    height=0,
+                )
 
             if st.session_state.fast_error:
                 st.error(st.session_state.fast_error)
+            if st.session_state.fast_info:
+                st.success(st.session_state.fast_info)
+
+            if full and not st.session_state.fast_info:
+                st.success("✅ Registro lleno (120/120).")
 
         with colC:
             b1, b2 = st.columns(2)
             with b1:
-                if st.button("⬆️", help="Anterior"):
+                if st.button("⬆️", help="Anterior", disabled=(st.session_state.idx == 0)):
                     st.session_state.idx = max(0, st.session_state.idx - 1)
+                    if st.session_state.idx >= 120:
+                        st.session_state.idx = 119
                     st.session_state.peso_txt = ""
                     st.session_state.fast_error = ""
+                    st.session_state.fast_info = ""
                     st.rerun()
             with b2:
-                if st.button("⬇️", help="Siguiente"):
+                if st.button("⬇️", help="Siguiente", disabled=(st.session_state.idx >= 120)):
                     st.session_state.idx = min(119, st.session_state.idx + 1)
                     st.session_state.peso_txt = ""
                     st.session_state.fast_error = ""
+                    st.session_state.fast_info = ""
                     st.rerun()
 
         st.caption("Últimos valores ingresados")
         last_rows = []
-        for i in range(max(0, st.session_state.idx - 10), st.session_state.idx):
+        # mostramos últimos 10 registrados (no importa si idx=120)
+        current_idx = min(st.session_state.idx, 120)
+        for i in range(max(0, current_idx - 10), current_idx):
             last_rows.append({"N°": i + 1, "PESO": st.session_state.pesos[i]})
         if last_rows:
             st.dataframe(pd.DataFrame(last_rows), use_container_width=True, hide_index=True)
@@ -428,9 +509,6 @@ def main():
 
     with b3:
         st.button("Limpiar formulario", on_click=on_clear)
-
-    # refresco inmediato (opcional) para que se vea limpio sin esperar
-    # st.rerun() no es necesario aquí: el click ya causa rerun
 
 
 if __name__ == "__main__":
