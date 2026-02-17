@@ -36,6 +36,7 @@ def ensure_headers(ws):
         "fecha",
         "producto",
         "vehiculo_contenedor",
+        "viaje",
         "peso_promedio",
         "pesos_pipe_120",
         "ejecutado_por",
@@ -44,6 +45,9 @@ def ensure_headers(ws):
     first_row = ws.row_values(1)
     if not first_row:
         ws.append_row(headers)
+    else:
+        # Si ya existen headers antiguos, no forzamos cambios (evita romper hojas en producción)
+        pass
 
 
 def append_record_to_sheet(meta: dict, pesos: list[float | None], promedio: float | None):
@@ -67,6 +71,7 @@ def append_record_to_sheet(meta: dict, pesos: list[float | None], promedio: floa
         meta.get("fecha", ""),
         meta.get("producto", ""),
         meta.get("vehiculo", ""),
+        meta.get("viaje", ""),
         f"{promedio:.3f}" if promedio is not None else "",
         "|".join(pesos_str),
         meta.get("ejecutado_por", ""),
@@ -107,26 +112,33 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     margin = 1.2 * cm
     content_w = width - 2 * margin
 
+    # Marco externo
     c.setLineWidth(1.0)
     c.rect(margin, margin, content_w, height - 2 * margin)
 
-    header_h = 2.4 * cm
+    # Header box
+    header_h = 2.7 * cm  # un poquito más alto para separación
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
 
     c.setFont("Helvetica-Bold", 12)
-    c.drawCentredString(margin + content_w / 2, height - margin - 0.8 * cm, APP_TITLE)
+    c.drawCentredString(margin + content_w / 2, height - margin - 0.7 * cm, APP_TITLE)
 
+    # Línea separadora dentro del header (un poco más abajo)
     c.setLineWidth(0.6)
-    c.line(margin, height - margin - 1.2 * cm, margin + content_w, height - margin - 1.2 * cm)
+    c.line(margin, height - margin - 1.25 * cm, margin + content_w, height - margin - 1.25 * cm)
 
+    # Textos header con más “aire”
     c.setFont("Helvetica", 10)
-    c.drawString(margin + 0.5 * cm, height - margin - 1.9 * cm, f"FECHA: {meta.get('fecha','')}")
-    c.drawString(margin + 7.5 * cm, height - margin - 1.9 * cm, f"PRODUCTO: {meta.get('producto','')}")
-    c.drawString(margin + 0.5 * cm, height - margin - 2.25 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
+    c.drawString(margin + 0.5 * cm, height - margin - 1.95 * cm, f"FECHA: {meta.get('fecha','')}")
+    c.drawString(margin + 7.5 * cm, height - margin - 1.95 * cm, f"PRODUCTO: {meta.get('producto','')}")
+    c.drawString(margin + 0.5 * cm, height - margin - 2.35 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
+    c.drawString(margin + 7.5 * cm, height - margin - 2.35 * cm, f"VIAJE: {meta.get('viaje','')}")
 
-    y = height - margin - header_h - 0.7 * cm
+    # Más separación entre header y tabla
+    y = height - margin - header_h - 0.9 * cm
 
+    # Tabla 3 bloques
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
     pesos_120 = (pesos[:120] + [None] * 120)[:120]
 
@@ -155,8 +167,9 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
     table.drawOn(c, table_x, y - th)
-    y = y - th - 0.9 * cm
+    y = y - th - 1.1 * cm  # un poco más de separación
 
+    # Promedio
     box_h = 1.0 * cm
     c.setLineWidth(0.8)
     c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
@@ -164,8 +177,9 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setFont("Helvetica-Bold", 10)
     prom_txt = f"{promedio:.3f}" if promedio is not None else ""
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
-    y -= 1.6 * cm
+    y -= 1.7 * cm  # más aire
 
+    # Firmas
     sig_w = (content_w - 2.0 * cm) / 2
     sig_h = 2.0 * cm
     left_x = margin + 0.5 * cm
@@ -229,15 +243,11 @@ def on_fast_save():
     if st.session_state.idx < 119:
         st.session_state.idx += 1
 
-    # limpiar input (sin error, porque esto corre en callback)
     st.session_state.peso_txt = ""
-
-    # actualizar tabla base (para que muestre lo nuevo)
     st.session_state.table_df = pesos_to_df(st.session_state.pesos)
 
 
 def on_apply_table():
-    # aplicar lo que el usuario editó en la tabla a la lista pesos
     df = st.session_state.table_df.copy()
     st.session_state.pesos = df_to_pesos(df)
 
@@ -249,13 +259,15 @@ def main():
 
     st.title("Verificación de pesos por contenedor")
 
-    c1, c2, c3 = st.columns([1, 2, 1])
+    c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
     with c1:
         fecha = st.date_input("Fecha", value=date.today())
     with c2:
         producto = st.text_input("Producto")
     with c3:
         vehiculo = st.text_input("Vehículo / Contenedor")
+    with c4:
+        viaje = st.text_input("Viaje")
 
     st.divider()
 
@@ -285,7 +297,6 @@ def main():
                 st.text_input("Peso", key="peso_txt", placeholder="Ej: 25.158")
                 st.form_submit_button("Guardar (Enter)", on_click=on_fast_save)
 
-            # Teclado numérico + autofocus (mejora operador)
             components.html(
                 """
                 <script>
@@ -332,7 +343,6 @@ def main():
     else:
         st.subheader("Tabla (revisión/edición)")
 
-        # Tabla editable SIN “comerse” datos: editas y luego presionas Aplicar cambios
         st.session_state.table_df = st.data_editor(
             st.session_state.table_df,
             key="table_editor",
@@ -348,7 +358,7 @@ def main():
         with colx:
             st.button("Aplicar cambios de tabla", on_click=on_apply_table)
         with coly:
-            st.caption("Consejo: para captura rápida y Enter → siguiente, usa “Captura rápida”.")
+            st.caption("Consejo: para Enter → siguiente, usa “Captura rápida”.")
 
     st.divider()
 
@@ -362,6 +372,7 @@ def main():
         "fecha": str(fecha),
         "producto": producto.strip(),
         "vehiculo": vehiculo.strip(),
+        "viaje": viaje.strip(),
         "ejecutado_por": ejecutado_por.strip(),
         "recibido_por": recibido_por.strip(),
     }
