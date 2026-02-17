@@ -119,11 +119,9 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     margin = 1.2 * cm
     content_w = width - 2 * margin
 
-    # Marco externo
     c.setLineWidth(1.0)
     c.rect(margin, margin, content_w, height - 2 * margin)
 
-    # Header box
     header_h = 2.7 * cm
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
@@ -134,17 +132,14 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setLineWidth(0.6)
     c.line(margin, height - margin - 1.25 * cm, margin + content_w, height - margin - 1.25 * cm)
 
-    # Textos header
     c.setFont("Helvetica", 10)
     c.drawString(margin + 0.5 * cm, height - margin - 1.95 * cm, f"FECHA: {meta.get('fecha','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 1.95 * cm, f"PRODUCTO: {meta.get('producto','')}")
     c.drawString(margin + 0.5 * cm, height - margin - 2.35 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 2.35 * cm, f"VIAJE: {meta.get('viaje','')}")
 
-    # Separación entre header y tabla
     y = height - margin - header_h - 0.9 * cm
 
-    # Tabla 3 bloques
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
     pesos_120 = (pesos[:120] + [None] * 120)[:120]
 
@@ -173,9 +168,8 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
     table.drawOn(c, table_x, y - th)
-    y = y - th - 1.0 * cm  # un poco menos para ganar espacio abajo
+    y = y - th - 1.0 * cm
 
-    # Promedio
     box_h = 1.0 * cm
     c.setLineWidth(0.8)
     c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
@@ -184,20 +178,17 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     prom_txt = f"{promedio:.3f}" if promedio is not None else ""
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
 
-    # BAJAMOS MENOS para que las firmas NO se salgan del marco
     y -= 1.25 * cm
 
-    # ---------------- Firmas (DENTRO DEL MARCO, SIN DESBORDAR) ----------------
     inner_padding = 1.0 * cm
     inner_left = margin + inner_padding
     inner_right = margin + content_w - inner_padding
     inner_width = inner_right - inner_left
 
-    gap = 1.0 * cm  # un poquito menos
+    gap = 1.0 * cm
     sig_w = (inner_width - gap) / 2
-    sig_h = 1.75 * cm  # MÁS BAJO (antes 2.1), para que quepa dentro del marco
+    sig_h = 1.75 * cm
 
-    # Si por alguna razón y quedó muy abajo, lo SUBIMOS automáticamente
     min_bottom = margin + 0.35 * cm
     if (y - sig_h) < min_bottom:
         y = min_bottom + sig_h
@@ -226,7 +217,6 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setFont(font_right, size_right)
     c.drawString(right_x + 0.4 * cm, y - 1.05 * cm, name_right)
 
-    # Línea de firma (más arriba para que no choque con el borde)
     c.setLineWidth(0.6)
     c.line(left_x + 0.4 * cm, y - 1.55 * cm, left_x + sig_w - 0.4 * cm, y - 1.55 * cm)
     c.line(right_x + 0.4 * cm, y - 1.55 * cm, right_x + sig_w - 0.4 * cm, y - 1.55 * cm)
@@ -280,6 +270,15 @@ def on_fast_save():
 def on_apply_table():
     df = st.session_state.table_df.copy()
     st.session_state.pesos = df_to_pesos(df)
+
+
+def on_clear():
+    # Limpieza total SIN error (callback)
+    st.session_state.pesos = [None] * 120
+    st.session_state.idx = 0
+    st.session_state.peso_txt = ""
+    st.session_state.fast_error = ""
+    st.session_state.table_df = pesos_to_df(st.session_state.pesos)
 
 
 # -------------------- App --------------------
@@ -428,13 +427,10 @@ def main():
         st.download_button("Descargar PDF (A4)", data=pdf_bytes, file_name=filename, mime="application/pdf")
 
     with b3:
-        if st.button("Limpiar formulario"):
-            st.session_state.pesos = [None] * 120
-            st.session_state.idx = 0
-            st.session_state.peso_txt = ""
-            st.session_state.fast_error = ""
-            st.session_state.table_df = pesos_to_df(st.session_state.pesos)
-            st.rerun()
+        st.button("Limpiar formulario", on_click=on_clear)
+
+    # refresco inmediato (opcional) para que se vea limpio sin esperar
+    # st.rerun() no es necesario aquí: el click ya causa rerun
 
 
 if __name__ == "__main__":
