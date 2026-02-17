@@ -1,5 +1,6 @@
 import streamlit as st
 import pandas as pd
+import numpy as np
 from datetime import date, datetime
 
 import gspread
@@ -28,7 +29,6 @@ def get_gsheet_client():
 
 
 def ensure_headers(ws):
-    """Crea encabezados si la hoja está vacía."""
     headers = [
         "timestamp",
         "fecha",
@@ -44,7 +44,7 @@ def ensure_headers(ws):
         ws.append_row(headers)
 
 
-def append_record_to_sheet(meta: dict, df: pd.DataFrame, promedio: float | None):
+def append_record_to_sheet(meta: dict, pesos: list[float | None], promedio: float | None):
     client = get_gsheet_client()
     spreadsheet_id = st.secrets["app"]["spreadsheet_id"]
     worksheet_name = st.secrets["app"]["worksheet_name"]
@@ -53,15 +53,11 @@ def append_record_to_sheet(meta: dict, df: pd.DataFrame, promedio: float | None)
     ws = sh.worksheet(worksheet_name)
     ensure_headers(ws)
 
-    pesos = pd.to_numeric(df["PESO"], errors="coerce").tolist()
-
-    # Convertimos a texto, manteniendo vacíos
     pesos_str = []
-    for p in pesos[:120]:
-        if p is None or (isinstance(p, float) and pd.isna(p)):
+    for p in (pesos[:120] + [None] * 120)[:120]:
+        if p is None or (isinstance(p, float) and np.isnan(p)):
             pesos_str.append("")
         else:
-            # Si quieres enteros, cambia a int(p)
             pesos_str.append(str(p))
 
     row = [
@@ -69,7 +65,7 @@ def append_record_to_sheet(meta: dict, df: pd.DataFrame, promedio: float | None)
         meta.get("fecha", ""),
         meta.get("producto", ""),
         meta.get("vehiculo", ""),
-        f"{promedio:.2f}" if promedio is not None else "",
+        f"{promedio:.3f}" if promedio is not None else "",
         "|".join(pesos_str),
         meta.get("ejecutado_por", ""),
         meta.get("recibido_por", ""),
@@ -77,88 +73,128 @@ def append_record_to_sheet(meta: dict, df: pd.DataFrame, promedio: float | None)
     ws.append_row(row, value_input_option="USER_ENTERED")
 
 
-# -------------------- PDF (A4) --------------------
-def build_pdf(meta: dict, df: pd.DataFrame, promedio: float | None) -> bytes:
-    buffer = io.BytesIO()
+# -------------------- Helpers --------------------
+def compute_promedio(pesos: list[float | None]) -> float | None:
+    arr = pd.to_numeric(pd.Series(pesos), errors="coerce")
+    mean_val = arr.mean(skipna=True)
+    if pd.isna(mean_val):
+        return None
+    return float(mean_val)
 
+
+def fmt_num(p: float | None, decimals=3) -> str:
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return ""
+    # Mostrar hasta 3 decimales, sin forzar ceros si no quieres (pero aquí se ve “limpio”)
+    return f"{p:.{decimals}f}".rstrip("0").rstrip(".")
+
+
+# -------------------- PDF (A4 profesional) --------------------
+def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> bytes:
+    buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    margin_x = 1.0 * cm
-    y = height - 1.2 * cm
+    # Márgenes y layout
+    margin = 1.2 * cm
+    content_w = width - 2 * margin
 
-    # Título
+    y = height - margin
+
+    # Marco externo
+    c.setLineWidth(1.0)
+    c.rect(margin, margin, content_w, height - 2 * margin)
+
+    # Encabezado con caja
+    header_h = 2.4 * cm
+    c.setLineWidth(0.8)
+    c.rect(margin, height - margin - header_h, content_w, header_h)
+
+    # Título centrado
     c.setFont("Helvetica-Bold", 12)
-    c.drawString(margin_x, y, APP_TITLE)
-    y -= 0.7 * cm
+    c.drawCentredString(margin + content_w / 2, height - margin - 0.8 * cm, APP_TITLE)
 
-    # Encabezado (Fecha / Producto / Vehículo)
+    # Línea separadora dentro del header
+    c.setLineWidth(0.6)
+    c.line(margin, height - margin - 1.2 * cm, margin + content_w, height - margin - 1.2 * cm)
+
+    # Datos header (alineados)
     c.setFont("Helvetica", 10)
-    c.drawString(margin_x, y, f"FECHA: {meta.get('fecha','')}")
-    c.drawString(margin_x + 7.5 * cm, y, f"PRODUCTO: {meta.get('producto','')}")
-    y -= 0.7 * cm
+    c.drawString(margin + 0.5 * cm, height - margin - 1.9 * cm, f"FECHA: {meta.get('fecha','')}")
+    c.drawString(margin + 7.5 * cm, height - margin - 1.9 * cm, f"PRODUCTO: {meta.get('producto','')}")
+    c.drawString(margin + 0.5 * cm, height - margin - 2.25 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
 
-    c.drawString(margin_x, y, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
-    y -= 0.9 * cm
+    # Tabla centrada debajo del header
+    y = height - margin - header_h - 0.7 * cm
 
-    # Tabla 1..120 en 3 columnas (1-40, 41-80, 81-120)
+    # Construir tabla (3 bloques de 40)
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
-
-    pesos = pd.to_numeric(df["PESO"], errors="coerce").tolist()
-    if len(pesos) < 120:
-        pesos = pesos + [None] * (120 - len(pesos))
-    pesos = pesos[:120]
-
-    def fmt(p):
-        if p is None or (isinstance(p, float) and pd.isna(p)):
-            return ""
-        return str(p)
+    pesos_120 = (pesos[:120] + [None] * 120)[:120]
 
     for i in range(40):
-        n1 = i + 1
-        n2 = i + 41
-        n3 = i + 81
-        data.append([str(n1), fmt(pesos[n1 - 1]), str(n2), fmt(pesos[n2 - 1]), str(n3), fmt(pesos[n3 - 1])])
+        n1, n2, n3 = i + 1, i + 41, i + 81
+        data.append([
+            str(n1), fmt_num(pesos_120[n1 - 1]),
+            str(n2), fmt_num(pesos_120[n2 - 1]),
+            str(n3), fmt_num(pesos_120[n3 - 1]),
+        ])
 
-    table = Table(
-        data,
-        colWidths=[0.9 * cm, 2.0 * cm, 0.9 * cm, 2.0 * cm, 0.9 * cm, 2.0 * cm],
-        rowHeights=0.48 * cm,
-    )
+    col_widths = [0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm]
+    row_h = 0.47 * cm
 
-    table.setStyle(
-        TableStyle(
-            [
-                ("GRID", (0, 0), (-1, -1), 0.7, colors.black),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ]
-        )
-    )
+    table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-    table_width, table_height = table.wrapOn(c, width - 2 * margin_x, y)
-    table.drawOn(c, margin_x, y - table_height)
-    y = y - table_height - 0.8 * cm
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        # Borde exterior un poco más fuerte
+        ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
+    ]))
 
-    # Peso promedio
+    tw, th = table.wrapOn(c, content_w, y)
+    table_x = margin + (content_w - tw) / 2
+    table.drawOn(c, table_x, y - th)
+
+    y = y - th - 0.9 * cm
+
+    # Promedio en una caja
+    box_h = 1.0 * cm
+    c.setLineWidth(0.8)
+    c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
+
     c.setFont("Helvetica-Bold", 10)
-    if promedio is None:
-        c.drawString(margin_x, y, "PESO PROMEDIO: ")
-    else:
-        c.drawString(margin_x, y, f"PESO PROMEDIO: {promedio:.2f}")
-    y -= 1.2 * cm
+    prom_txt = f"{promedio:.3f}" if promedio is not None else ""
+    c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
 
-    # Firmas
+    y -= 1.6 * cm
+
+    # Firmas (dos cajas)
+    sig_w = (content_w - 2.0 * cm) / 2
+    sig_h = 2.0 * cm
+
+    left_x = margin + 0.5 * cm
+    right_x = left_x + sig_w + 1.0 * cm
+
+    c.setLineWidth(0.8)
+    c.rect(left_x, y - sig_h, sig_w, sig_h)
+    c.rect(right_x, y - sig_h, sig_w, sig_h)
+
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left_x + 0.4 * cm, y - 0.6 * cm, "EJECUTADO POR:")
+    c.drawString(right_x + 0.4 * cm, y - 0.6 * cm, "RECIBIDO POR:")
+
     c.setFont("Helvetica", 10)
-    c.drawString(margin_x, y, f"EJECUTADO POR: {meta.get('ejecutado_por','')}")
-    c.drawString(margin_x + 9 * cm, y, f"RECIBIDO POR: {meta.get('recibido_por','')}")
-    y -= 0.9 * cm
+    c.drawString(left_x + 0.4 * cm, y - 1.2 * cm, meta.get("ejecutado_por", ""))
+    c.drawString(right_x + 0.4 * cm, y - 1.2 * cm, meta.get("recibido_por", ""))
 
-    c.line(margin_x, y, margin_x + 7.5 * cm, y)
-    c.line(margin_x + 9 * cm, y, margin_x + 16.5 * cm, y)
+    # Línea para firma
+    c.setLineWidth(0.6)
+    c.line(left_x + 0.4 * cm, y - 1.7 * cm, left_x + sig_w - 0.4 * cm, y - 1.7 * cm)
+    c.line(right_x + 0.4 * cm, y - 1.7 * cm, right_x + sig_w - 0.4 * cm, y - 1.7 * cm)
 
     c.showPage()
     c.save()
@@ -166,50 +202,118 @@ def build_pdf(meta: dict, df: pd.DataFrame, promedio: float | None) -> bytes:
     return buffer.getvalue()
 
 
-# -------------------- App UI --------------------
+# -------------------- App --------------------
+def init_state():
+    if "pesos" not in st.session_state:
+        st.session_state.pesos = [None] * 120
+    if "idx" not in st.session_state:
+        st.session_state.idx = 0  # 0..119
+    if "modo" not in st.session_state:
+        st.session_state.modo = "Captura rápida"
+
+
 def main():
     st.set_page_config(page_title="Verificación de Pesos", layout="wide")
+    init_state()
+
     st.title("Verificación de pesos por contenedor")
 
-    # Datos generales
-    col1, col2, col3 = st.columns([1, 1, 1])
-    with col1:
+    # Formulario header - responsive natural
+    c1, c2, c3 = st.columns([1, 2, 1])
+    with c1:
         fecha = st.date_input("Fecha", value=date.today())
-    with col2:
+    with c2:
         producto = st.text_input("Producto")
-    with col3:
+    with c3:
         vehiculo = st.text_input("Vehículo / Contenedor")
 
     st.divider()
 
-    # Tabla editable de pesos (1..120)
-    if "df_pesos" not in st.session_state:
-        st.session_state.df_pesos = pd.DataFrame({"N°": list(range(1, 121)), "PESO": [None] * 120})
-
-    st.subheader("Registro de Pesos (1 a 120)")
-    edited = st.data_editor(
-        st.session_state.df_pesos,
-        hide_index=True,
-        use_container_width=True,
-        column_config={
-            "N°": st.column_config.NumberColumn("N°", disabled=True),
-            "PESO": st.column_config.NumberColumn("PESO", min_value=0.0, step=0.1),
-        },
+    st.session_state.modo = st.radio(
+        "Modo de captura",
+        ["Captura rápida", "Tabla (revisión/edición)"],
+        horizontal=True
     )
-    st.session_state.df_pesos = edited
 
     # Promedio
-    pesos_numeric = pd.to_numeric(edited["PESO"], errors="coerce")
-    promedio = pesos_numeric.mean(skipna=True)
-    promedio_out = None if pd.isna(promedio) else float(promedio)
-    st.info(f"Peso promedio (solo celdas llenas): {promedio_out:.2f}" if promedio_out is not None else "Peso promedio: —")
+    promedio = compute_promedio(st.session_state.pesos)
+    st.info(f"Peso promedio: {promedio:.3f}" if promedio is not None else "Peso promedio: —")
 
     st.divider()
 
-    colA, colB = st.columns(2)
-    with colA:
+    # ----------- Captura rápida -----------
+    if st.session_state.modo == "Captura rápida":
+        st.subheader("Captura rápida (escribe el peso y presiona Enter)")
+
+        idx = st.session_state.idx
+        n_actual = idx + 1
+
+        colA, colB, colC = st.columns([1, 2, 1])
+        with colA:
+            st.metric("N° actual", n_actual)
+
+        # IMPORTANTE: number_input en móvil abre teclado numérico
+        with colB:
+            with st.form("fast_form", clear_on_submit=True):
+                # Valor actual por si quieren ver/editar
+                current_val = st.session_state.pesos[idx]
+                peso = st.number_input(
+                    "Peso",
+                    min_value=0.0,
+                    step=0.001,          # permite 25.158
+                    format="%.3f",        # muestra 3 decimales
+                    value=float(current_val) if current_val is not None and not np.isnan(current_val) else 0.0
+                )
+                submitted = st.form_submit_button("Guardar (Enter)")
+
+            if submitted:
+                st.session_state.pesos[idx] = float(peso)
+                # Avanza automático
+                if st.session_state.idx < 119:
+                    st.session_state.idx += 1
+                st.rerun()
+
+        with colC:
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("⬆️", help="Anterior"):
+                    st.session_state.idx = max(0, st.session_state.idx - 1)
+                    st.rerun()
+            with b2:
+                if st.button("⬇️", help="Siguiente"):
+                    st.session_state.idx = min(119, st.session_state.idx + 1)
+                    st.rerun()
+
+        # Vista mini (últimos 10)
+        st.caption("Últimos valores ingresados")
+        last_rows = []
+        for i in range(max(0, st.session_state.idx - 10), st.session_state.idx):
+            last_rows.append({"N°": i + 1, "PESO": st.session_state.pesos[i]})
+        if last_rows:
+            st.dataframe(pd.DataFrame(last_rows), use_container_width=True, hide_index=True)
+
+    # ----------- Tabla para revisar -----------
+    else:
+        st.subheader("Tabla (revisión/edición)")
+        df = pd.DataFrame({"N°": list(range(1, 121)), "PESO": st.session_state.pesos})
+
+        edited = st.data_editor(
+            df,
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "N°": st.column_config.NumberColumn("N°", disabled=True),
+                "PESO": st.column_config.NumberColumn("PESO", min_value=0.0, step=0.001, format="%.3f"),
+            },
+        )
+        st.session_state.pesos = pd.to_numeric(edited["PESO"], errors="coerce").tolist()
+
+    st.divider()
+
+    col1, col2 = st.columns(2)
+    with col1:
         ejecutado_por = st.text_input("Ejecutado por")
-    with colB:
+    with col2:
         recibido_por = st.text_input("Recibido por")
 
     meta = {
@@ -220,23 +324,23 @@ def main():
         "recibido_por": recibido_por.strip(),
     }
 
-    # Botones
     b1, b2, b3 = st.columns([1, 1, 1])
 
     with b1:
         if st.button("Guardar en Google Sheets", type="primary"):
-            # Validación básica
             if not meta["producto"] or not meta["vehiculo"]:
                 st.warning("Completa PRODUCTO y VEHÍCULO/CONTENEDOR antes de guardar.")
             else:
                 try:
-                    append_record_to_sheet(meta, edited, promedio_out)
+                    promedio_now = compute_promedio(st.session_state.pesos)
+                    append_record_to_sheet(meta, st.session_state.pesos, promedio_now)
                     st.success("✅ Guardado en Google Sheets.")
                 except Exception as e:
                     st.error(f"Error guardando en Sheets: {e}")
 
     with b2:
-        pdf_bytes = build_pdf(meta, edited, promedio_out)
+        promedio_now = compute_promedio(st.session_state.pesos)
+        pdf_bytes = build_pdf(meta, st.session_state.pesos, promedio_now)
         filename = f"verificacion_pesos_{meta['fecha']}_{(meta['vehiculo'] or 'sin_vehiculo')}.pdf".replace(" ", "_")
         st.download_button(
             "Descargar PDF (A4)",
@@ -247,7 +351,8 @@ def main():
 
     with b3:
         if st.button("Limpiar formulario"):
-            st.session_state.df_pesos = pd.DataFrame({"N°": list(range(1, 121)), "PESO": [None] * 120})
+            st.session_state.pesos = [None] * 120
+            st.session_state.idx = 0
             st.rerun()
 
 
