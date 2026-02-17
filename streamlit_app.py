@@ -101,10 +101,6 @@ def df_to_pesos(df: pd.DataFrame):
 
 
 def fit_text(c, text, max_width, base_font="Helvetica", base_size=10, min_size=7):
-    """
-    Reduce el tamaño de letra hasta que el texto quepa en max_width.
-    Retorna (font_name, font_size).
-    """
     size = base_size
     while size >= min_size:
         c.setFont(base_font, size)
@@ -189,11 +185,18 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
     y -= 1.7 * cm
 
-    # Firmas
-    sig_w = (content_w - 2.0 * cm) / 2
-    sig_h = 2.1 * cm  # un poquito más alto para que no se desborde
-    left_x = margin + 0.5 * cm
-    right_x = left_x + sig_w + 1.0 * cm
+    # ---------------- Firmas (DENTRO DEL MARCO) ----------------
+    inner_padding = 1.0 * cm
+    inner_left = margin + inner_padding
+    inner_right = margin + content_w - inner_padding
+    inner_width = inner_right - inner_left
+
+    gap = 1.2 * cm
+    sig_w = (inner_width - gap) / 2
+    sig_h = 2.1 * cm
+
+    left_x = inner_left
+    right_x = inner_left + sig_w + gap
 
     c.setLineWidth(0.8)
     c.rect(left_x, y - sig_h, sig_w, sig_h)
@@ -203,11 +206,10 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.drawString(left_x + 0.4 * cm, y - 0.6 * cm, "EJECUTADO POR:")
     c.drawString(right_x + 0.4 * cm, y - 0.6 * cm, "RECIBIDO POR:")
 
-    # --- Nombres ajustados para que NO se desborden ---
     name_left = meta.get("ejecutado_por", "") or ""
     name_right = meta.get("recibido_por", "") or ""
 
-    max_text_w = sig_w - 0.8 * cm  # padding izq/der
+    max_text_w = sig_w - 0.8 * cm
     font_left, size_left = fit_text(c, name_left, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
     font_right, size_right = fit_text(c, name_right, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
 
@@ -217,7 +219,6 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setFont(font_right, size_right)
     c.drawString(right_x + 0.4 * cm, y - 1.2 * cm, name_right)
 
-    # Línea para firma (un poco más abajo)
     c.setLineWidth(0.6)
     c.line(left_x + 0.4 * cm, y - 1.85 * cm, left_x + sig_w - 0.4 * cm, y - 1.85 * cm)
     c.line(right_x + 0.4 * cm, y - 1.85 * cm, right_x + sig_w - 0.4 * cm, y - 1.85 * cm)
