@@ -1,6 +1,9 @@
-import streamlit as st
-import pandas as pd
+import re
+import io
 import numpy as np
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, datetime
 
 import gspread
@@ -11,7 +14,6 @@ from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.platypus import Table, TableStyle
-import io
 
 
 APP_TITLE = "VERIFICACIÓN DE PESOS POR CONTENEDOR"
@@ -92,7 +94,7 @@ def fmt_num(p: float | None) -> str:
 def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> bytes:
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4
+    width, height = A4  # noqa: F841
 
     margin = 1.2 * cm
     content_w = width - 2 * margin
@@ -125,25 +127,34 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
 
     for i in range(40):
         n1, n2, n3 = i + 1, i + 41, i + 81
-        data.append([
-            str(n1), fmt_num(pesos_120[n1 - 1]),
-            str(n2), fmt_num(pesos_120[n2 - 1]),
-            str(n3), fmt_num(pesos_120[n3 - 1]),
-        ])
+        data.append(
+            [
+                str(n1),
+                fmt_num(pesos_120[n1 - 1]),
+                str(n2),
+                fmt_num(pesos_120[n2 - 1]),
+                str(n3),
+                fmt_num(pesos_120[n3 - 1]),
+            ]
+        )
 
     col_widths = [0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm]
     row_h = 0.47 * cm
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-    table.setStyle(TableStyle([
-        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
-        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-        ("FONTSIZE", (0, 0), (-1, -1), 8),
-        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
-    ]))
+    table.setStyle(
+        TableStyle(
+            [
+                ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+                ("FONTSIZE", (0, 0), (-1, -1), 8),
+                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
+            ]
+        )
+    )
 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
@@ -195,9 +206,8 @@ def init_state():
         st.session_state.idx = 0
     if "modo" not in st.session_state:
         st.session_state.modo = "Captura rápida"
-    # Campo de captura (VACÍO)
-    if "peso_actual" not in st.session_state:
-        st.session_state.peso_actual = None
+    if "peso_txt" not in st.session_state:
+        st.session_state.peso_txt = ""
 
 
 # -------------------- App --------------------
@@ -240,53 +250,64 @@ def main():
             st.metric("N° actual", n_actual)
 
         with colB:
-            # Form: Enter guarda
             with st.form("fast_form", clear_on_submit=False):
-                # input vacío = None (no 0.000)
-                peso = st.number_input(
+                st.text_input(
                     "Peso",
-                    min_value=0.0,
-                    step=0.001,
-                    format="%.3f",
-                    value=st.session_state.peso_actual if st.session_state.peso_actual is not None else 0.0,
-                    key="peso_input_internal",
+                    key="peso_txt",
+                    placeholder="Ej: 25.158",
                 )
-                # truco: si está "vacío" lo tratamos como None, NO guardamos 0 automático
                 submitted = st.form_submit_button("Guardar (Enter)")
 
+            # Teclado numérico en celular (inputmode decimal)
+            components.html(
+                """
+                <script>
+                  const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+                  for (const i of inputs) {
+                    const aria = i.getAttribute('aria-label') || '';
+                    if (aria.trim() === 'Peso') {
+                      i.setAttribute('inputmode', 'decimal');
+                      i.setAttribute('pattern', '[0-9]*[\\.,]?[0-9]*');
+                    }
+                  }
+                </script>
+                """,
+                height=0,
+            )
+
             if submitted:
-                # Si el usuario no escribió nada y quedó en 0.000, no registramos por defecto
-                # (si realmente quieres permitir 0 como peso real, dime y lo ajusto)
-                if st.session_state.peso_actual is None and float(peso) == 0.0:
+                raw = (st.session_state.peso_txt or "").strip()
+
+                if raw == "":
                     st.warning("Escribe un peso antes de guardar.")
                 else:
-                    st.session_state.pesos[idx] = float(peso)
-                    # Avanza
-                    if st.session_state.idx < 119:
-                        st.session_state.idx += 1
-                    # LIMPIAR el campo para el siguiente peso
-                    st.session_state.peso_actual = None
-                    # también resetea el input interno
-                    st.session_state.peso_input_internal = 0.0
-                    st.rerun()
+                    raw2 = raw.replace(",", ".")
+                    if not re.fullmatch(r"\d+(\.\d+)?", raw2):
+                        st.error("Formato inválido. Ej: 25.158")
+                    else:
+                        val = float(raw2)
+                        st.session_state.pesos[idx] = val
+
+                        if st.session_state.idx < 119:
+                            st.session_state.idx += 1
+
+                        # Limpia campo (queda BLANCO)
+                        st.session_state.peso_txt = ""
+                        st.rerun()
 
         with colC:
             b1, b2 = st.columns(2)
             with b1:
                 if st.button("⬆️", help="Anterior"):
                     st.session_state.idx = max(0, st.session_state.idx - 1)
-                    # al cambiar de fila, limpia input para que no arrastre
-                    st.session_state.peso_actual = None
-                    st.session_state.peso_input_internal = 0.0
+                    st.session_state.peso_txt = ""
                     st.rerun()
             with b2:
                 if st.button("⬇️", help="Siguiente"):
                     st.session_state.idx = min(119, st.session_state.idx + 1)
-                    st.session_state.peso_actual = None
-                    st.session_state.peso_input_internal = 0.0
+                    st.session_state.peso_txt = ""
                     st.rerun()
 
-        # Últimos 10 valores
         st.caption("Últimos valores ingresados")
         last_rows = []
         for i in range(max(0, st.session_state.idx - 10), st.session_state.idx):
@@ -350,8 +371,7 @@ def main():
         if st.button("Limpiar formulario"):
             st.session_state.pesos = [None] * 120
             st.session_state.idx = 0
-            st.session_state.peso_actual = None
-            st.session_state.peso_input_internal = 0.0
+            st.session_state.peso_txt = ""
             st.rerun()
 
 
