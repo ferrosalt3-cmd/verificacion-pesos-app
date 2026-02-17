@@ -173,7 +173,7 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
     table.drawOn(c, table_x, y - th)
-    y = y - th - 1.1 * cm
+    y = y - th - 1.0 * cm  # un poco menos para ganar espacio abajo
 
     # Promedio
     box_h = 1.0 * cm
@@ -183,17 +183,24 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setFont("Helvetica-Bold", 10)
     prom_txt = f"{promedio:.3f}" if promedio is not None else ""
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
-    y -= 1.7 * cm
 
-    # ---------------- Firmas (DENTRO DEL MARCO) ----------------
+    # BAJAMOS MENOS para que las firmas NO se salgan del marco
+    y -= 1.25 * cm
+
+    # ---------------- Firmas (DENTRO DEL MARCO, SIN DESBORDAR) ----------------
     inner_padding = 1.0 * cm
     inner_left = margin + inner_padding
     inner_right = margin + content_w - inner_padding
     inner_width = inner_right - inner_left
 
-    gap = 1.2 * cm
+    gap = 1.0 * cm  # un poquito menos
     sig_w = (inner_width - gap) / 2
-    sig_h = 2.1 * cm
+    sig_h = 1.75 * cm  # MÁS BAJO (antes 2.1), para que quepa dentro del marco
+
+    # Si por alguna razón y quedó muy abajo, lo SUBIMOS automáticamente
+    min_bottom = margin + 0.35 * cm
+    if (y - sig_h) < min_bottom:
+        y = min_bottom + sig_h
 
     left_x = inner_left
     right_x = inner_left + sig_w + gap
@@ -203,8 +210,8 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.rect(right_x, y - sig_h, sig_w, sig_h)
 
     c.setFont("Helvetica-Bold", 9)
-    c.drawString(left_x + 0.4 * cm, y - 0.6 * cm, "EJECUTADO POR:")
-    c.drawString(right_x + 0.4 * cm, y - 0.6 * cm, "RECIBIDO POR:")
+    c.drawString(left_x + 0.4 * cm, y - 0.55 * cm, "EJECUTADO POR:")
+    c.drawString(right_x + 0.4 * cm, y - 0.55 * cm, "RECIBIDO POR:")
 
     name_left = meta.get("ejecutado_por", "") or ""
     name_right = meta.get("recibido_por", "") or ""
@@ -214,14 +221,15 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     font_right, size_right = fit_text(c, name_right, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
 
     c.setFont(font_left, size_left)
-    c.drawString(left_x + 0.4 * cm, y - 1.2 * cm, name_left)
+    c.drawString(left_x + 0.4 * cm, y - 1.05 * cm, name_left)
 
     c.setFont(font_right, size_right)
-    c.drawString(right_x + 0.4 * cm, y - 1.2 * cm, name_right)
+    c.drawString(right_x + 0.4 * cm, y - 1.05 * cm, name_right)
 
+    # Línea de firma (más arriba para que no choque con el borde)
     c.setLineWidth(0.6)
-    c.line(left_x + 0.4 * cm, y - 1.85 * cm, left_x + sig_w - 0.4 * cm, y - 1.85 * cm)
-    c.line(right_x + 0.4 * cm, y - 1.85 * cm, right_x + sig_w - 0.4 * cm, y - 1.85 * cm)
+    c.line(left_x + 0.4 * cm, y - 1.55 * cm, left_x + sig_w - 0.4 * cm, y - 1.55 * cm)
+    c.line(right_x + 0.4 * cm, y - 1.55 * cm, right_x + sig_w - 0.4 * cm, y - 1.55 * cm)
 
     c.showPage()
     c.save()
