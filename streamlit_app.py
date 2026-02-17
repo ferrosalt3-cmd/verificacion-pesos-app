@@ -1,59 +1,63 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
-import uuid
+import re
 import io
+import uuid
+import math
+import numpy as np
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
 from datetime import date, datetime
-from zoneinfo import ZoneInfo
 
 import gspread
 from google.oauth2.service_account import Credentials
 
 from reportlab.lib.pagesizes import A4
-from reportlab.lib.units import cm
-from reportlab.platypus import Table, TableStyle
 from reportlab.pdfgen import canvas
+from reportlab.lib.units import cm
 from reportlab.lib import colors
+from reportlab.platypus import Table, TableStyle
 
 
-# =========================================================
-# CONFIG
-# =========================================================
-st.set_page_config(page_title="Verificación de Pesos", layout="wide")
+APP_TITLE = "VERIFICACIÓN DE PESOS POR CONTENEDOR"
 
 
-# =========================================================
-# GOOGLE SHEETS
-# =========================================================
+# =========================
+# Google Sheets (LISTA)
+# =========================
+SHEET_HEADERS = [
+    "timestamp",
+    "registro_id",
+    "fecha",
+    "producto",
+    "vehiculo_contenedor",
+    "viaje",
+    "n",
+    "peso",
+    "ejecutado_por",
+    "recibido_por",
+]
+
+
 def get_gsheet_client():
-    creds_dict = dict(st.secrets["gcp_service_account"])
-    creds = Credentials.from_service_account_info(
-        creds_dict,
-        scopes=["https://www.googleapis.com/auth/spreadsheets"],
-    )
+    sa_info = st.secrets["gcp_service_account"]
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    creds = Credentials.from_service_account_info(sa_info, scopes=scopes)
     return gspread.authorize(creds)
 
 
 def ensure_headers(ws):
-    headers = ws.row_values(1)
-    if headers:
-        return
-
-    ws.append_row([
-        "timestamp",
-        "registro_id",
-        "fecha",
-        "producto",
-        "vehiculo_contenedor",
-        "viaje",
-        "n",
-        "peso",
-        "ejecutado_por",
-        "recibido_por",
-    ])
+    first_row = ws.row_values(1)
+    if not first_row:
+        ws.append_row(SHEET_HEADERS)
 
 
-def append_list_rows_to_sheet(meta, pesos):
+def append_list_rows_to_sheet(meta: dict, pesos: list[float | None]):
+    """
+    Guarda como LISTA: una fila por cada peso.
+    """
     client = get_gsheet_client()
     spreadsheet_id = st.secrets["app"]["spreadsheet_id"]
     worksheet_name = st.secrets["app"]["worksheet_name"]
@@ -64,21 +68,19 @@ def append_list_rows_to_sheet(meta, pesos):
 
     reg_id = meta.get("registro_id") or str(uuid.uuid4())
 
-    # ✅ HORA CORRECTA PERÚ (LIMA)
-    ts = datetime.now(ZoneInfo("America/Lima")).strftime("%Y-%m-%d %H:%M:%S")
+    # ✅ HORA LOCAL CORRECTA
+    ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
 
     rows = []
-
     for i, p in enumerate(pesos, start=1):
         if p is None or (isinstance(p, float) and np.isnan(p)):
             continue
-
         rows.append([
             ts,
             reg_id,
             meta.get("fecha", ""),
             meta.get("producto", ""),
-            meta.get("vehiculo_contenedor", ""),
+            meta.get("vehiculo", ""),
             meta.get("viaje", ""),
             i,
             float(p),
@@ -86,211 +88,457 @@ def append_list_rows_to_sheet(meta, pesos):
             meta.get("recibido_por", ""),
         ])
 
-    if rows:
-        ws.append_rows(rows, value_input_option="USER_ENTERED")
+    if not rows:
+        raise ValueError("No hay pesos para guardar.")
+
+    ws.append_rows(rows, value_input_option="USER_ENTERED")
 
 
-# =========================================================
-# PDF
-# =========================================================
-def build_pdf(meta, pesos):
-    buffer = io.BytesIO()
-    c = canvas.Canvas(buffer, pagesize=A4)
+# =========================
+# Helpers
+# =========================
+def parse_weight_text(raw: str) -> tuple[float | None, str]:
+    raw = (raw or "").strip()
+    if raw == "":
+        return None, "Escribe un peso antes de guardar."
+    raw2 = raw.replace(",", ".")
+    if not re.fullmatch(r"\d+(\.\d+)?", raw2):
+        return None, "Formato inválido. Ej: 25.158"
+    return float(raw2), ""
+
+
+def compute_promedio(pesos: list[float | None]) -> float | None:
+    arr = pd.to_numeric(pd.Series(pesos), errors="coerce")
+    mean_val = arr.mean(skipna=True)
+    if pd.isna(mean_val):
+        return None
+    return float(mean_val)
+
+
+def fmt_num(p: float | None) -> str:
+    if p is None or (isinstance(p, float) and np.isnan(p)):
+        return ""
+    return f"{p:.3f}".rstrip("0").rstrip(".")
+
+
+def fit_text(c, text, max_width, base_font="Helvetica", base_size=10, min_size=7):
+    size = base_size
+    while size >= min_size:
+        c.setFont(base_font, size)
+        if c.stringWidth(text, base_font, size) <= max_width:
+            return base_font, size
+        size -= 1
+    return base_font, min_size
+
+
+def last_valid_weight(pesos: list[float | None], up_to_idx: int) -> float | None:
+    for i in range(min(up_to_idx - 1, len(pesos) - 1), -1, -1):
+        p = pesos[i]
+        if p is None:
+            continue
+        if isinstance(p, float) and np.isnan(p):
+            continue
+        return float(p)
+    return None
+
+
+def pesos_to_df(pesos):
+    return pd.DataFrame({"N°": list(range(1, len(pesos) + 1)), "PESO": pesos})
+
+
+def df_to_pesos(df: pd.DataFrame):
+    return pd.to_numeric(df["PESO"], errors="coerce").tolist()
+
+
+# =========================
+# PDF PRO + MULTIPÁGINA (120 por hoja)
+# =========================
+def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None], promedio_global: float | None):
     width, height = A4
 
-    pesos = [p for p in pesos if p not in (None, "")]
+    margin = 1.2 * cm
+    content_w = width - 2 * margin
 
-    # dividir en páginas de 120
-    pages = [pesos[i:i + 120] for i in range(0, len(pesos), 120)]
-    if not pages:
-        pages = [[]]
+    # Marco externo
+    c.setLineWidth(1.0)
+    c.rect(margin, margin, content_w, height - 2 * margin)
 
-    for page_index, page_data in enumerate(pages):
-        margin = 1.5 * cm
-        content_w = width - 2 * margin
+    # Header box
+    header_h = 2.7 * cm
+    c.setLineWidth(0.8)
+    c.rect(margin, height - margin - header_h, content_w, header_h)
 
-        # marco
-        c.setLineWidth(1)
-        c.rect(margin, margin, content_w, height - 2 * margin)
+    c.setFont("Helvetica-Bold", 12)
+    c.drawCentredString(margin + content_w / 2, height - margin - 0.7 * cm, APP_TITLE)
 
-        # título
-        c.setFont("Helvetica-Bold", 12)
-        c.drawCentredString(width / 2, height - margin - 0.7 * cm,
-                            "VERIFICACIÓN DE PESOS POR CONTENEDOR")
+    c.setLineWidth(0.6)
+    c.line(margin, height - margin - 1.25 * cm, margin + content_w, height - margin - 1.25 * cm)
 
-        # info
-        c.setFont("Helvetica", 9)
-        y_info = height - margin - 1.6 * cm
+    # Textos header
+    c.setFont("Helvetica", 10)
+    c.drawString(margin + 0.5 * cm, height - margin - 1.95 * cm, f"FECHA: {meta.get('fecha','')}")
+    c.drawString(margin + 7.5 * cm, height - margin - 1.95 * cm, f"PRODUCTO: {meta.get('producto','')}")
+    c.drawString(margin + 0.5 * cm, height - margin - 2.35 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
+    c.drawString(margin + 7.5 * cm, height - margin - 2.35 * cm, f"VIAJE: {meta.get('viaje','')}")
 
-        c.drawString(margin + 0.4 * cm, y_info,
-                     f"FECHA: {meta.get('fecha','')}")
-        c.drawString(width / 2, y_info,
-                     f"PRODUCTO: {meta.get('producto','')}")
+    # Separación entre header y tabla
+    y = height - margin - header_h - 0.9 * cm
 
-        y_info -= 0.5 * cm
+    # Tabla 120 = 40 filas x 3 bloques
+    data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
+    pesos_120 = (pesos_chunk + [None] * 120)[:120]
 
-        c.drawString(margin + 0.4 * cm, y_info,
-                     f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo_contenedor','')}")
-        c.drawString(width / 2, y_info,
-                     f"VIAJE: {meta.get('viaje','')}")
+    for i in range(40):
+        n1, n2, n3 = i + 1, i + 41, i + 81
+        data.append([
+            str(n1), fmt_num(pesos_120[n1 - 1]),
+            str(n2), fmt_num(pesos_120[n2 - 1]),
+            str(n3), fmt_num(pesos_120[n3 - 1]),
+        ])
 
-        # ---------------- TABLA ----------------
-        start_y = y_info - 1.0 * cm
+    col_widths = [0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm]
+    row_h = 0.47 * cm
+    table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-        data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
+    # ✅ centrado y ordenado
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
+    ]))
 
-        for i in range(40):
-            row = []
-            for block in range(3):
-                idx = i + block * 40
-                if idx < len(page_data):
-                    val = page_data[idx]
-                    row += [idx + 1, f"{val:.3f}"]
-                else:
-                    row += ["", ""]
-            data.append(row)
+    tw, th = table.wrapOn(c, content_w, y)
+    table_x = margin + (content_w - tw) / 2
+    table.drawOn(c, table_x, y - th)
+    y = y - th - 1.0 * cm
 
-        table = Table(
-            data,
-            colWidths=[1 * cm, 2 * cm] * 3,
-            rowHeights=0.45 * cm,
-        )
+    # Promedio global
+    box_h = 1.0 * cm
+    c.setLineWidth(0.8)
+    c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
 
-        table.setStyle(TableStyle([
-            ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
-            ("BACKGROUND", (0, 0), (-1, 0), colors.lightgrey),
-            ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-            ("FONTSIZE", (0, 0), (-1, -1), 7),
-        ]))
+    c.setFont("Helvetica-Bold", 10)
+    prom_txt = f"{promedio_global:.3f}" if promedio_global is not None else ""
+    c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
 
-        table.wrapOn(c, width, height)
-        table.drawOn(c, margin + 2.5 * cm, start_y - 18 * cm)
+    y -= 1.25 * cm
 
-        # promedio
-        if page_data:
-            prom = sum(page_data) / len(page_data)
-            c.setFont("Helvetica-Bold", 9)
-            c.drawString(margin + 0.5 * cm, margin + 4.5 * cm,
-                         f"PESO PROMEDIO: {prom:.3f}")
+    # Firmas dentro del marco
+    inner_padding = 1.0 * cm
+    inner_left = margin + inner_padding
+    inner_right = margin + content_w - inner_padding
+    inner_width = inner_right - inner_left
 
-        # firmas
-        sig_y = margin + 2.8 * cm
-        sig_w = 7 * cm
-        gap = 2 * cm
+    gap = 1.0 * cm
+    sig_w = (inner_width - gap) / 2
+    sig_h = 1.75 * cm
 
-        left_x = margin + 2 * cm
-        right_x = left_x + sig_w + gap
+    min_bottom = margin + 0.35 * cm
+    if (y - sig_h) < min_bottom:
+        y = min_bottom + sig_h
 
-        c.rect(left_x, sig_y, sig_w, 2 * cm)
-        c.rect(right_x, sig_y, sig_w, 2 * cm)
+    left_x = inner_left
+    right_x = inner_left + sig_w + gap
 
-        c.setFont("Helvetica-Bold", 8)
-        c.drawString(left_x + 0.3 * cm, sig_y + 1.5 * cm, "EJECUTADO POR:")
-        c.drawString(right_x + 0.3 * cm, sig_y + 1.5 * cm, "RECIBIDO POR:")
+    c.setLineWidth(0.8)
+    c.rect(left_x, y - sig_h, sig_w, sig_h)
+    c.rect(right_x, y - sig_h, sig_w, sig_h)
 
-        c.setFont("Helvetica", 9)
-        c.drawString(left_x + 0.3 * cm, sig_y + 0.7 * cm,
-                     meta.get("ejecutado_por", ""))
-        c.drawString(right_x + 0.3 * cm, sig_y + 0.7 * cm,
-                     meta.get("recibido_por", ""))
+    c.setFont("Helvetica-Bold", 9)
+    c.drawString(left_x + 0.4 * cm, y - 0.55 * cm, "EJECUTADO POR:")
+    c.drawString(right_x + 0.4 * cm, y - 0.55 * cm, "RECIBIDO POR:")
 
-        if page_index < len(pages) - 1:
+    name_left = meta.get("ejecutado_por", "") or ""
+    name_right = meta.get("recibido_por", "") or ""
+
+    max_text_w = sig_w - 0.8 * cm
+    font_left, size_left = fit_text(c, name_left, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
+    font_right, size_right = fit_text(c, name_right, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
+
+    c.setFont(font_left, size_left)
+    c.drawString(left_x + 0.4 * cm, y - 1.05 * cm, name_left)
+
+    c.setFont(font_right, size_right)
+    c.drawString(right_x + 0.4 * cm, y - 1.05 * cm, name_right)
+
+    c.setLineWidth(0.6)
+    c.line(left_x + 0.4 * cm, y - 1.55 * cm, left_x + sig_w - 0.4 * cm, y - 1.55 * cm)
+    c.line(right_x + 0.4 * cm, y - 1.55 * cm, right_x + sig_w - 0.4 * cm, y - 1.55 * cm)
+
+
+def build_pdf_multi(meta: dict, pesos: list[float | None]) -> bytes:
+    buffer = io.BytesIO()
+    c = canvas.Canvas(buffer, pagesize=A4)
+
+    promedio_global = compute_promedio(pesos)
+
+    total = len(pesos)
+    pages = max(1, math.ceil(total / 120)) if total > 0 else 1
+
+    for page in range(pages):
+        start = page * 120
+        end = start + 120
+        chunk = pesos[start:end]
+        draw_pdf_page(c, meta, chunk, promedio_global)
+        if page < pages - 1:
             c.showPage()
 
     c.save()
-    buffer.seek(0)
-    return buffer
+    return buffer.getvalue()
 
 
-# =========================================================
-# SESSION STATE
-# =========================================================
-if "pesos" not in st.session_state:
-    st.session_state.pesos = []
+# =========================
+# State
+# =========================
+def init_state():
+    if "pesos" not in st.session_state:
+        st.session_state.pesos = []  # infinito
+    if "idx" not in st.session_state:
+        st.session_state.idx = 0
+    if "modo" not in st.session_state:
+        st.session_state.modo = "Captura rápida"
+    if "peso_txt" not in st.session_state:
+        st.session_state.peso_txt = ""
+    if "fast_error" not in st.session_state:
+        st.session_state.fast_error = ""
+    if "fast_info" not in st.session_state:
+        st.session_state.fast_info = ""
+    if "table_df" not in st.session_state:
+        st.session_state.table_df = pesos_to_df(st.session_state.pesos)
+    if "registro_id" not in st.session_state:
+        st.session_state.registro_id = str(uuid.uuid4())
 
-if "peso_txt" not in st.session_state:
+
+# =========================
+# Callbacks
+# =========================
+def on_fast_save():
+    st.session_state.fast_error = ""
+    st.session_state.fast_info = ""
+
+    val, err = parse_weight_text(st.session_state.peso_txt)
+    if err:
+        st.session_state.fast_error = err
+        return
+
+    idx = st.session_state.idx
+
+    # escribir en idx (creciendo infinito)
+    if idx == len(st.session_state.pesos):
+        st.session_state.pesos.append(float(val))
+    elif idx < len(st.session_state.pesos):
+        st.session_state.pesos[idx] = float(val)
+    else:
+        while len(st.session_state.pesos) < idx:
+            st.session_state.pesos.append(None)
+        st.session_state.pesos.append(float(val))
+
+    st.session_state.idx = idx + 1
     st.session_state.peso_txt = ""
+    st.session_state.table_df = pesos_to_df(st.session_state.pesos)
 
 
-# =========================================================
-# UI
-# =========================================================
-st.title("Verificación de pesos por contenedor")
+def on_repeat_last():
+    st.session_state.fast_error = ""
+    st.session_state.fast_info = ""
 
-col1, col2, col3, col4 = st.columns(4)
+    idx = st.session_state.idx
+    last_w = last_valid_weight(st.session_state.pesos, idx)
+    if last_w is None:
+        st.session_state.fast_error = "No hay un peso anterior para repetir."
+        return
 
-fecha = col1.date_input("Fecha", value=date.today())
-producto = col2.text_input("Producto")
-vehiculo = col3.text_input("Vehículo / Contenedor")
-viaje = col4.text_input("Viaje")
+    if idx == len(st.session_state.pesos):
+        st.session_state.pesos.append(float(last_w))
+    elif idx < len(st.session_state.pesos):
+        st.session_state.pesos[idx] = float(last_w)
+    else:
+        while len(st.session_state.pesos) < idx:
+            st.session_state.pesos.append(None)
+        st.session_state.pesos.append(float(last_w))
 
-st.subheader("Captura rápida")
+    st.session_state.idx = idx + 1
+    st.session_state.peso_txt = ""
+    st.session_state.table_df = pesos_to_df(st.session_state.pesos)
 
-st.write(f"**N° actual:** {len(st.session_state.pesos) + 1}")
 
-with st.form("captura_form", clear_on_submit=True):
-    peso_txt = st.text_input(
-        "Peso",
-        key="peso_txt",
-        placeholder="Ej: 25.158"
-    )
+def on_apply_table():
+    df = st.session_state.table_df.copy()
+    st.session_state.pesos = df_to_pesos(df)
+    st.session_state.idx = min(st.session_state.idx, len(st.session_state.pesos))
 
-    c1, c2 = st.columns([1, 1])
-    guardar = c1.form_submit_button("Guardar (Enter)")
-    repetir = c2.form_submit_button("Repetir último")
 
-    if guardar and peso_txt:
-        try:
-            val = float(peso_txt.replace(",", "."))
-            st.session_state.pesos.append(val)
-        except:
-            st.error("Peso inválido")
-
-    if repetir and st.session_state.pesos:
-        st.session_state.pesos.append(st.session_state.pesos[-1])
-
-# promedio
-if st.session_state.pesos:
-    prom = sum(st.session_state.pesos) / len(st.session_state.pesos)
-    st.info(f"Peso promedio: {prom:.3f}")
-
-st.divider()
-
-# botones
-c1, c2, c3 = st.columns(3)
-
-if c1.button("Guardar en Google Sheets"):
-    meta = dict(
-        fecha=str(fecha),
-        producto=producto,
-        vehiculo_contenedor=vehiculo,
-        viaje=viaje,
-        ejecutado_por=st.session_state.get("ejecutado_por", ""),
-        recibido_por=st.session_state.get("recibido_por", ""),
-    )
-    append_list_rows_to_sheet(meta, st.session_state.pesos)
-    st.success("Guardado en Google Sheets")
-
-pdf_buffer = build_pdf(
-    dict(
-        fecha=str(fecha),
-        producto=producto,
-        vehiculo_contenedor=vehiculo,
-        viaje=viaje,
-        ejecutado_por=st.session_state.get("ejecutado_por", ""),
-        recibido_por=st.session_state.get("recibido_por", ""),
-    ),
-    st.session_state.pesos,
-)
-
-c2.download_button(
-    "Descargar PDF",
-    pdf_buffer,
-    file_name="verificacion_pesos.pdf",
-    mime="application/pdf",
-)
-
-if c3.button("Limpiar formulario"):
+def on_clear():
     st.session_state.pesos = []
-    st.rerun()
+    st.session_state.idx = 0
+    st.session_state.peso_txt = ""
+    st.session_state.fast_error = ""
+    st.session_state.fast_info = ""
+    st.session_state.table_df = pesos_to_df(st.session_state.pesos)
+    st.session_state.registro_id = str(uuid.uuid4())
+
+
+# =========================
+# App
+# =========================
+def main():
+    st.set_page_config(page_title="Verificación de Pesos", layout="wide")
+    init_state()
+
+    st.title("Verificación de pesos por contenedor")
+
+    c1, c2, c3, c4 = st.columns([1, 2, 1, 1])
+    with c1:
+        fecha = st.date_input("Fecha", value=date.today())
+    with c2:
+        producto = st.text_input("Producto")
+    with c3:
+        vehiculo = st.text_input("Vehículo / Contenedor")
+    with c4:
+        viaje = st.text_input("Viaje")
+
+    st.divider()
+
+    # ✅ Mantener modos como antes
+    st.session_state.modo = st.radio(
+        "Modo de captura",
+        ["Captura rápida", "Tabla (revisión/edición)"],
+        horizontal=True,
+    )
+
+    promedio = compute_promedio(st.session_state.pesos)
+    st.info(f"Peso promedio: {promedio:.3f}" if promedio is not None else "Peso promedio: —")
+
+    st.divider()
+
+    if st.session_state.modo == "Captura rápida":
+        st.subheader("Captura rápida (escribe el peso y presiona Enter)")
+
+        colA, colB, colC = st.columns([1, 2, 1])
+        with colA:
+            st.metric("N° actual", st.session_state.idx + 1)
+
+        with colB:
+            with st.form("fast_form", clear_on_submit=False):
+                st.text_input("Peso", key="peso_txt", placeholder="Ej: 25.158")
+                cbtn1, cbtn2 = st.columns([1, 1])
+                with cbtn1:
+                    st.form_submit_button("Guardar (Enter)", on_click=on_fast_save)
+                with cbtn2:
+                    st.form_submit_button("Repetir último", on_click=on_repeat_last)
+
+            # Teclado numérico + focus
+            components.html(
+                """
+                <script>
+                  const inputs = window.parent.document.querySelectorAll('input[type="text"]');
+                  for (const i of inputs) {
+                    const aria = i.getAttribute('aria-label') || '';
+                    if (aria.trim() === 'Peso') {
+                      i.setAttribute('inputmode', 'decimal');
+                      i.setAttribute('pattern', '[0-9][\\.,]?[0-9]');
+                      i.focus();
+                      i.select();
+                    }
+                  }
+                </script>
+                """,
+                height=0,
+            )
+
+            if st.session_state.fast_error:
+                st.error(st.session_state.fast_error)
+            if st.session_state.fast_info:
+                st.success(st.session_state.fast_info)
+
+        with colC:
+            b1, b2 = st.columns(2)
+            with b1:
+                if st.button("⬆️", help="Anterior", disabled=(st.session_state.idx == 0)):
+                    st.session_state.idx = max(0, st.session_state.idx - 1)
+                    st.session_state.peso_txt = ""
+                    st.session_state.fast_error = ""
+                    st.session_state.fast_info = ""
+                    st.rerun()
+            with b2:
+                if st.button("⬇️", help="Siguiente"):
+                    st.session_state.idx = st.session_state.idx + 1
+                    st.session_state.peso_txt = ""
+                    st.session_state.fast_error = ""
+                    st.session_state.fast_info = ""
+                    st.rerun()
+
+        st.caption("Últimos valores ingresados")
+        last_rows = []
+        upto = min(len(st.session_state.pesos), st.session_state.idx)
+        for i in range(max(0, upto - 10), upto):
+            last_rows.append({"N°": i + 1, "PESO": st.session_state.pesos[i]})
+        if last_rows:
+            st.dataframe(pd.DataFrame(last_rows), use_container_width=True, hide_index=True)
+        else:
+            st.write("Aún no hay registros.")
+
+    else:
+        # ✅ Mantener tabla como antes para revisar/modificar
+        st.subheader("Tabla (revisión/edición)")
+
+        st.session_state.table_df = st.data_editor(
+            pesos_to_df(st.session_state.pesos),
+            key="table_editor",
+            hide_index=True,
+            use_container_width=True,
+            column_config={
+                "N°": st.column_config.NumberColumn("N°", disabled=True),
+                "PESO": st.column_config.NumberColumn("PESO", min_value=0.0, step=0.001, format="%.3f"),
+            },
+        )
+
+        st.button("Aplicar cambios de tabla", on_click=on_apply_table)
+        st.caption("Consejo: para capturar rápido con Enter, usa “Captura rápida”.")
+
+    st.divider()
+
+    col1, col2 = st.columns(2)
+    with col1:
+        ejecutado_por = st.text_input("Ejecutado por")
+    with col2:
+        recibido_por = st.text_input("Recibido por")
+
+    meta = {
+        "registro_id": st.session_state.registro_id,
+        "fecha": str(fecha),
+        "producto": producto.strip(),
+        "vehiculo": vehiculo.strip(),
+        "viaje": viaje.strip(),
+        "ejecutado_por": ejecutado_por.strip(),
+        "recibido_por": recibido_por.strip(),
+    }
+
+    b1, b2, b3 = st.columns([1, 1, 1])
+
+    with b1:
+        if st.button("Guardar en Google Sheets", type="primary"):
+            if not meta["producto"] or not meta["vehiculo"]:
+                st.warning("Completa PRODUCTO y VEHÍCULO/CONTENEDOR antes de guardar.")
+            else:
+                try:
+                    append_list_rows_to_sheet(meta, st.session_state.pesos)
+                    st.success("✅ Guardado en Google Sheets como LISTA (1 fila por peso).")
+                except Exception as e:
+                    st.error(f"Error guardando en Sheets: {e}")
+
+    with b2:
+        pdf_bytes = build_pdf_multi(meta, st.session_state.pesos)
+        filename = f"verificacion_pesos_{meta['fecha']}{(meta['vehiculo'] or 'sin_vehiculo')}.pdf".replace(" ", "")
+        st.download_button("Descargar PDF (A4)", data=pdf_bytes, file_name=filename, mime="application/pdf")
+
+    with b3:
+        st.button("Limpiar formulario", on_click=on_clear)
+
+
+if _name_ == "_main_":
+    main()
