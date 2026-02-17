@@ -45,9 +45,6 @@ def ensure_headers(ws):
     first_row = ws.row_values(1)
     if not first_row:
         ws.append_row(headers)
-    else:
-        # Si ya existen headers antiguos, no forzamos cambios (evita romper hojas en producción)
-        pass
 
 
 def append_record_to_sheet(meta: dict, pesos: list[float | None], promedio: float | None):
@@ -103,6 +100,20 @@ def df_to_pesos(df: pd.DataFrame):
     return pd.to_numeric(df["PESO"], errors="coerce").tolist()
 
 
+def fit_text(c, text, max_width, base_font="Helvetica", base_size=10, min_size=7):
+    """
+    Reduce el tamaño de letra hasta que el texto quepa en max_width.
+    Retorna (font_name, font_size).
+    """
+    size = base_size
+    while size >= min_size:
+        c.setFont(base_font, size)
+        if c.stringWidth(text, base_font, size) <= max_width:
+            return base_font, size
+        size -= 1
+    return base_font, min_size
+
+
 # -------------------- PDF (A4 profesional) --------------------
 def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> bytes:
     buffer = io.BytesIO()
@@ -117,25 +128,24 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.rect(margin, margin, content_w, height - 2 * margin)
 
     # Header box
-    header_h = 2.7 * cm  # un poquito más alto para separación
+    header_h = 2.7 * cm
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
 
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(margin + content_w / 2, height - margin - 0.7 * cm, APP_TITLE)
 
-    # Línea separadora dentro del header (un poco más abajo)
     c.setLineWidth(0.6)
     c.line(margin, height - margin - 1.25 * cm, margin + content_w, height - margin - 1.25 * cm)
 
-    # Textos header con más “aire”
+    # Textos header
     c.setFont("Helvetica", 10)
     c.drawString(margin + 0.5 * cm, height - margin - 1.95 * cm, f"FECHA: {meta.get('fecha','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 1.95 * cm, f"PRODUCTO: {meta.get('producto','')}")
     c.drawString(margin + 0.5 * cm, height - margin - 2.35 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 2.35 * cm, f"VIAJE: {meta.get('viaje','')}")
 
-    # Más separación entre header y tabla
+    # Separación entre header y tabla
     y = height - margin - header_h - 0.9 * cm
 
     # Tabla 3 bloques
@@ -167,7 +177,7 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
     table.drawOn(c, table_x, y - th)
-    y = y - th - 1.1 * cm  # un poco más de separación
+    y = y - th - 1.1 * cm
 
     # Promedio
     box_h = 1.0 * cm
@@ -177,11 +187,11 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setFont("Helvetica-Bold", 10)
     prom_txt = f"{promedio:.3f}" if promedio is not None else ""
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
-    y -= 1.7 * cm  # más aire
+    y -= 1.7 * cm
 
     # Firmas
     sig_w = (content_w - 2.0 * cm) / 2
-    sig_h = 2.0 * cm
+    sig_h = 2.1 * cm  # un poquito más alto para que no se desborde
     left_x = margin + 0.5 * cm
     right_x = left_x + sig_w + 1.0 * cm
 
@@ -193,13 +203,24 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.drawString(left_x + 0.4 * cm, y - 0.6 * cm, "EJECUTADO POR:")
     c.drawString(right_x + 0.4 * cm, y - 0.6 * cm, "RECIBIDO POR:")
 
-    c.setFont("Helvetica", 10)
-    c.drawString(left_x + 0.4 * cm, y - 1.2 * cm, meta.get("ejecutado_por", ""))
-    c.drawString(right_x + 0.4 * cm, y - 1.2 * cm, meta.get("recibido_por", ""))
+    # --- Nombres ajustados para que NO se desborden ---
+    name_left = meta.get("ejecutado_por", "") or ""
+    name_right = meta.get("recibido_por", "") or ""
 
+    max_text_w = sig_w - 0.8 * cm  # padding izq/der
+    font_left, size_left = fit_text(c, name_left, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
+    font_right, size_right = fit_text(c, name_right, max_text_w, base_font="Helvetica", base_size=10, min_size=7)
+
+    c.setFont(font_left, size_left)
+    c.drawString(left_x + 0.4 * cm, y - 1.2 * cm, name_left)
+
+    c.setFont(font_right, size_right)
+    c.drawString(right_x + 0.4 * cm, y - 1.2 * cm, name_right)
+
+    # Línea para firma (un poco más abajo)
     c.setLineWidth(0.6)
-    c.line(left_x + 0.4 * cm, y - 1.7 * cm, left_x + sig_w - 0.4 * cm, y - 1.7 * cm)
-    c.line(right_x + 0.4 * cm, y - 1.7 * cm, right_x + sig_w - 0.4 * cm, y - 1.7 * cm)
+    c.line(left_x + 0.4 * cm, y - 1.85 * cm, left_x + sig_w - 0.4 * cm, y - 1.85 * cm)
+    c.line(right_x + 0.4 * cm, y - 1.85 * cm, right_x + sig_w - 0.4 * cm, y - 1.85 * cm)
 
     c.showPage()
     c.save()
