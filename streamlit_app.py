@@ -7,6 +7,7 @@ import pandas as pd
 import streamlit as st
 import streamlit.components.v1 as components
 from datetime import date, datetime
+from zoneinfo import ZoneInfo  # ✅ CAMBIO 1: Zona horaria Lima
 
 import gspread
 from google.oauth2.service_account import Credentials
@@ -68,8 +69,8 @@ def append_list_rows_to_sheet(meta: dict, pesos: list[float | None]):
 
     reg_id = meta.get("registro_id") or str(uuid.uuid4())
 
-    # ✅ HORA LOCAL CORRECTA
-    ts = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    # ✅ CAMBIO 2: HORA CORRECTA LIMA (no depende del servidor)
+    ts = datetime.now(ZoneInfo("America/Lima")).strftime("%Y-%m-%d %H:%M:%S")
 
     rows = []
     for i, p in enumerate(pesos, start=1):
@@ -159,11 +160,9 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     margin = 1.2 * cm
     content_w = width - 2 * margin
 
-    # Marco externo
     c.setLineWidth(1.0)
     c.rect(margin, margin, content_w, height - 2 * margin)
 
-    # Header box
     header_h = 2.7 * cm
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
@@ -174,17 +173,14 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     c.setLineWidth(0.6)
     c.line(margin, height - margin - 1.25 * cm, margin + content_w, height - margin - 1.25 * cm)
 
-    # Textos header
     c.setFont("Helvetica", 10)
     c.drawString(margin + 0.5 * cm, height - margin - 1.95 * cm, f"FECHA: {meta.get('fecha','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 1.95 * cm, f"PRODUCTO: {meta.get('producto','')}")
     c.drawString(margin + 0.5 * cm, height - margin - 2.35 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 2.35 * cm, f"VIAJE: {meta.get('viaje','')}")
 
-    # Separación entre header y tabla
     y = height - margin - header_h - 0.9 * cm
 
-    # Tabla 120 = 40 filas x 3 bloques
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
     pesos_120 = (pesos_chunk + [None] * 120)[:120]
 
@@ -200,7 +196,6 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     row_h = 0.47 * cm
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-    # ✅ centrado y ordenado
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
         ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
@@ -216,7 +211,6 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     table.drawOn(c, table_x, y - th)
     y = y - th - 1.0 * cm
 
-    # Promedio global
     box_h = 1.0 * cm
     c.setLineWidth(0.8)
     c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
@@ -227,7 +221,6 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
 
     y -= 1.25 * cm
 
-    # Firmas dentro del marco
     inner_padding = 1.0 * cm
     inner_left = margin + inner_padding
     inner_right = margin + content_w - inner_padding
@@ -296,7 +289,7 @@ def build_pdf_multi(meta: dict, pesos: list[float | None]) -> bytes:
 # =========================
 def init_state():
     if "pesos" not in st.session_state:
-        st.session_state.pesos = []  # infinito
+        st.session_state.pesos = []
     if "idx" not in st.session_state:
         st.session_state.idx = 0
     if "modo" not in st.session_state:
@@ -311,6 +304,10 @@ def init_state():
         st.session_state.table_df = pesos_to_df(st.session_state.pesos)
     if "registro_id" not in st.session_state:
         st.session_state.registro_id = str(uuid.uuid4())
+
+    # ✅ CAMBIO: para confirmar limpieza
+    if "confirm_clear" not in st.session_state:
+        st.session_state.confirm_clear = False
 
 
 # =========================
@@ -327,7 +324,6 @@ def on_fast_save():
 
     idx = st.session_state.idx
 
-    # escribir en idx (creciendo infinito)
     if idx == len(st.session_state.pesos):
         st.session_state.pesos.append(float(val))
     elif idx < len(st.session_state.pesos):
@@ -403,7 +399,6 @@ def main():
 
     st.divider()
 
-    # ✅ Mantener modos como antes
     st.session_state.modo = st.radio(
         "Modo de captura",
         ["Captura rápida", "Tabla (revisión/edición)"],
@@ -431,7 +426,6 @@ def main():
                 with cbtn2:
                     st.form_submit_button("Repetir último", on_click=on_repeat_last)
 
-            # Teclado numérico + focus
             components.html(
                 """
                 <script>
@@ -452,8 +446,6 @@ def main():
 
             if st.session_state.fast_error:
                 st.error(st.session_state.fast_error)
-            if st.session_state.fast_info:
-                st.success(st.session_state.fast_info)
 
         with colC:
             b1, b2 = st.columns(2)
@@ -483,7 +475,6 @@ def main():
             st.write("Aún no hay registros.")
 
     else:
-        # ✅ Mantener tabla como antes para revisar/modificar
         st.subheader("Tabla (revisión/edición)")
 
         st.session_state.table_df = st.data_editor(
@@ -528,6 +519,9 @@ def main():
                 try:
                     append_list_rows_to_sheet(meta, st.session_state.pesos)
                     st.success("✅ Guardado en Google Sheets como LISTA (1 fila por peso).")
+                    # ✅ CAMBIO: SOLO DESAPARECE CUANDO GUARDA OK
+                    on_clear()
+                    st.rerun()
                 except Exception as e:
                     st.error(f"Error guardando en Sheets: {e}")
 
@@ -537,7 +531,19 @@ def main():
         st.download_button("Descargar PDF (A4)", data=pdf_bytes, file_name=filename, mime="application/pdf")
 
     with b3:
-        st.button("Limpiar formulario", on_click=on_clear)
+        # ✅ CAMBIO: Confirmación para limpiar (evitar borrar por error)
+        if st.button("Limpiar formulario"):
+            st.session_state.confirm_clear = True
+
+        if st.session_state.confirm_clear:
+            st.warning("¿Seguro que deseas limpiar? Se perderán datos NO guardados.")
+            cc1, cc2 = st.columns(2)
+            if cc1.button("Sí, limpiar"):
+                st.session_state.confirm_clear = False
+                on_clear()
+                st.rerun()
+            if cc2.button("No"):
+                st.session_state.confirm_clear = False
 
 
 if __name__ == "__main__":
