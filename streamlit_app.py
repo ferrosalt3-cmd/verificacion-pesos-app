@@ -90,20 +90,26 @@ def fmt_num(p: float | None) -> str:
     return f"{p:.3f}".rstrip("0").rstrip(".")
 
 
+def pesos_to_df(pesos):
+    return pd.DataFrame({"N°": list(range(1, 121)), "PESO": pesos})
+
+
+def df_to_pesos(df: pd.DataFrame):
+    return pd.to_numeric(df["PESO"], errors="coerce").tolist()
+
+
 # -------------------- PDF (A4 profesional) --------------------
 def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> bytes:
     buffer = io.BytesIO()
     c = canvas.Canvas(buffer, pagesize=A4)
-    width, height = A4  # noqa: F841
+    width, height = A4
 
     margin = 1.2 * cm
     content_w = width - 2 * margin
 
-    # Marco externo
     c.setLineWidth(1.0)
     c.rect(margin, margin, content_w, height - 2 * margin)
 
-    # Header box
     header_h = 2.4 * cm
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
@@ -121,47 +127,36 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
 
     y = height - margin - header_h - 0.7 * cm
 
-    # Tabla 3 bloques
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
     pesos_120 = (pesos[:120] + [None] * 120)[:120]
 
     for i in range(40):
         n1, n2, n3 = i + 1, i + 41, i + 81
-        data.append(
-            [
-                str(n1),
-                fmt_num(pesos_120[n1 - 1]),
-                str(n2),
-                fmt_num(pesos_120[n2 - 1]),
-                str(n3),
-                fmt_num(pesos_120[n3 - 1]),
-            ]
-        )
+        data.append([
+            str(n1), fmt_num(pesos_120[n1 - 1]),
+            str(n2), fmt_num(pesos_120[n2 - 1]),
+            str(n3), fmt_num(pesos_120[n3 - 1]),
+        ])
 
     col_widths = [0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm]
     row_h = 0.47 * cm
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-    table.setStyle(
-        TableStyle(
-            [
-                ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
-                ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
-                ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
-                ("FONTSIZE", (0, 0), (-1, -1), 8),
-                ("ALIGN", (0, 0), (-1, -1), "CENTER"),
-                ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-                ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
-            ]
-        )
-    )
+    table.setStyle(TableStyle([
+        ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
+        ("FONTNAME", (0, 0), (-1, 0), "Helvetica-Bold"),
+        ("FONTSIZE", (0, 0), (-1, -1), 8),
+        ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+        ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+        ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
+    ]))
 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
     table.drawOn(c, table_x, y - th)
     y = y - th - 0.9 * cm
 
-    # Promedio
     box_h = 1.0 * cm
     c.setLineWidth(0.8)
     c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
@@ -171,7 +166,6 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
     y -= 1.6 * cm
 
-    # Firmas
     sig_w = (content_w - 2.0 * cm) / 2
     sig_h = 2.0 * cm
     left_x = margin + 0.5 * cm
@@ -208,6 +202,44 @@ def init_state():
         st.session_state.modo = "Captura rápida"
     if "peso_txt" not in st.session_state:
         st.session_state.peso_txt = ""
+    if "fast_error" not in st.session_state:
+        st.session_state.fast_error = ""
+    if "table_df" not in st.session_state:
+        st.session_state.table_df = pesos_to_df(st.session_state.pesos)
+
+
+# -------------------- Callbacks --------------------
+def on_fast_save():
+    st.session_state.fast_error = ""
+    idx = st.session_state.idx
+    raw = (st.session_state.peso_txt or "").strip()
+
+    if raw == "":
+        st.session_state.fast_error = "Escribe un peso antes de guardar."
+        return
+
+    raw2 = raw.replace(",", ".")
+    if not re.fullmatch(r"\d+(\.\d+)?", raw2):
+        st.session_state.fast_error = "Formato inválido. Ej: 25.158"
+        return
+
+    val = float(raw2)
+    st.session_state.pesos[idx] = val
+
+    if st.session_state.idx < 119:
+        st.session_state.idx += 1
+
+    # limpiar input (sin error, porque esto corre en callback)
+    st.session_state.peso_txt = ""
+
+    # actualizar tabla base (para que muestre lo nuevo)
+    st.session_state.table_df = pesos_to_df(st.session_state.pesos)
+
+
+def on_apply_table():
+    # aplicar lo que el usuario editó en la tabla a la lista pesos
+    df = st.session_state.table_df.copy()
+    st.session_state.pesos = df_to_pesos(df)
 
 
 # -------------------- App --------------------
@@ -238,7 +270,6 @@ def main():
 
     st.divider()
 
-    # ---------------- Captura rápida ----------------
     if st.session_state.modo == "Captura rápida":
         st.subheader("Captura rápida (escribe el peso y presiona Enter)")
 
@@ -251,14 +282,10 @@ def main():
 
         with colB:
             with st.form("fast_form", clear_on_submit=False):
-                st.text_input(
-                    "Peso",
-                    key="peso_txt",
-                    placeholder="Ej: 25.158",
-                )
-                submitted = st.form_submit_button("Guardar (Enter)")
+                st.text_input("Peso", key="peso_txt", placeholder="Ej: 25.158")
+                st.form_submit_button("Guardar (Enter)", on_click=on_fast_save)
 
-            # Teclado numérico en celular (inputmode decimal)
+            # Teclado numérico + autofocus (mejora operador)
             components.html(
                 """
                 <script>
@@ -268,6 +295,8 @@ def main():
                     if (aria.trim() === 'Peso') {
                       i.setAttribute('inputmode', 'decimal');
                       i.setAttribute('pattern', '[0-9]*[\\.,]?[0-9]*');
+                      i.focus();
+                      i.select();
                     }
                   }
                 </script>
@@ -275,25 +304,8 @@ def main():
                 height=0,
             )
 
-            if submitted:
-                raw = (st.session_state.peso_txt or "").strip()
-
-                if raw == "":
-                    st.warning("Escribe un peso antes de guardar.")
-                else:
-                    raw2 = raw.replace(",", ".")
-                    if not re.fullmatch(r"\d+(\.\d+)?", raw2):
-                        st.error("Formato inválido. Ej: 25.158")
-                    else:
-                        val = float(raw2)
-                        st.session_state.pesos[idx] = val
-
-                        if st.session_state.idx < 119:
-                            st.session_state.idx += 1
-
-                        # Limpia campo (queda BLANCO)
-                        st.session_state.peso_txt = ""
-                        st.rerun()
+            if st.session_state.fast_error:
+                st.error(st.session_state.fast_error)
 
         with colC:
             b1, b2 = st.columns(2)
@@ -301,11 +313,13 @@ def main():
                 if st.button("⬆️", help="Anterior"):
                     st.session_state.idx = max(0, st.session_state.idx - 1)
                     st.session_state.peso_txt = ""
+                    st.session_state.fast_error = ""
                     st.rerun()
             with b2:
                 if st.button("⬇️", help="Siguiente"):
                     st.session_state.idx = min(119, st.session_state.idx + 1)
                     st.session_state.peso_txt = ""
+                    st.session_state.fast_error = ""
                     st.rerun()
 
         st.caption("Últimos valores ingresados")
@@ -315,13 +329,13 @@ def main():
         if last_rows:
             st.dataframe(pd.DataFrame(last_rows), use_container_width=True, hide_index=True)
 
-    # ---------------- Tabla ----------------
     else:
         st.subheader("Tabla (revisión/edición)")
-        df = pd.DataFrame({"N°": list(range(1, 121)), "PESO": st.session_state.pesos})
 
-        edited = st.data_editor(
-            df,
+        # Tabla editable SIN “comerse” datos: editas y luego presionas Aplicar cambios
+        st.session_state.table_df = st.data_editor(
+            st.session_state.table_df,
+            key="table_editor",
             hide_index=True,
             use_container_width=True,
             column_config={
@@ -329,7 +343,12 @@ def main():
                 "PESO": st.column_config.NumberColumn("PESO", min_value=0.0, step=0.001, format="%.3f"),
             },
         )
-        st.session_state.pesos = pd.to_numeric(edited["PESO"], errors="coerce").tolist()
+
+        colx, coly = st.columns([1, 3])
+        with colx:
+            st.button("Aplicar cambios de tabla", on_click=on_apply_table)
+        with coly:
+            st.caption("Consejo: para captura rápida y Enter → siguiente, usa “Captura rápida”.")
 
     st.divider()
 
@@ -372,6 +391,8 @@ def main():
             st.session_state.pesos = [None] * 120
             st.session_state.idx = 0
             st.session_state.peso_txt = ""
+            st.session_state.fast_error = ""
+            st.session_state.table_df = pesos_to_df(st.session_state.pesos)
             st.rerun()
 
 
