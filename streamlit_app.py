@@ -440,7 +440,7 @@ def main():
                     const aria = i.getAttribute('aria-label') || '';
                     if (aria.trim() === 'Peso') {
                       i.setAttribute('inputmode', 'decimal');
-                      i.setAttribute('pattern', '[0-9][\\.,]?[0-9]');
+                      i.setAttribute('pattern', '[0-9]*[\\.,]?[0-9]*');
                       i.focus();
                       i.select();
                     }
@@ -533,12 +533,12 @@ def main():
 
     with b2:
         pdf_bytes = build_pdf_multi(meta, st.session_state.pesos)
-        filename = f"verificacion_pesos_{meta['fecha']}{(meta['vehiculo'] or 'sin_vehiculo')}.pdf".replace(" ", "")
+        filename = f"verificacion_pesos_{meta['fecha']}_{(meta['vehiculo'] or 'sin_vehiculo')}.pdf".replace(" ", "_")
         st.download_button("Descargar PDF (A4)", data=pdf_bytes, file_name=filename, mime="application/pdf")
 
     with b3:
         st.button("Limpiar formulario", on_click=on_clear)
 
 
-if _name_ == "_main_":
+if __name__ == "__main__":
     main()
