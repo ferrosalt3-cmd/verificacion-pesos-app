@@ -82,11 +82,10 @@ def compute_promedio(pesos: list[float | None]) -> float | None:
     return float(mean_val)
 
 
-def fmt_num(p: float | None, decimals=3) -> str:
+def fmt_num(p: float | None) -> str:
     if p is None or (isinstance(p, float) and np.isnan(p)):
         return ""
-    # Mostrar hasta 3 decimales, sin forzar ceros si no quieres (pero aquí se ve “limpio”)
-    return f"{p:.{decimals}f}".rstrip("0").rstrip(".")
+    return f"{p:.3f}".rstrip("0").rstrip(".")
 
 
 # -------------------- PDF (A4 profesional) --------------------
@@ -95,39 +94,32 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c = canvas.Canvas(buffer, pagesize=A4)
     width, height = A4
 
-    # Márgenes y layout
     margin = 1.2 * cm
     content_w = width - 2 * margin
-
-    y = height - margin
 
     # Marco externo
     c.setLineWidth(1.0)
     c.rect(margin, margin, content_w, height - 2 * margin)
 
-    # Encabezado con caja
+    # Header box
     header_h = 2.4 * cm
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
 
-    # Título centrado
     c.setFont("Helvetica-Bold", 12)
     c.drawCentredString(margin + content_w / 2, height - margin - 0.8 * cm, APP_TITLE)
 
-    # Línea separadora dentro del header
     c.setLineWidth(0.6)
     c.line(margin, height - margin - 1.2 * cm, margin + content_w, height - margin - 1.2 * cm)
 
-    # Datos header (alineados)
     c.setFont("Helvetica", 10)
     c.drawString(margin + 0.5 * cm, height - margin - 1.9 * cm, f"FECHA: {meta.get('fecha','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 1.9 * cm, f"PRODUCTO: {meta.get('producto','')}")
     c.drawString(margin + 0.5 * cm, height - margin - 2.25 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
 
-    # Tabla centrada debajo del header
     y = height - margin - header_h - 0.7 * cm
 
-    # Construir tabla (3 bloques de 40)
+    # Tabla 3 bloques
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
     pesos_120 = (pesos[:120] + [None] * 120)[:120]
 
@@ -141,7 +133,6 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
 
     col_widths = [0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm, 0.9 * cm, 2.2 * cm]
     row_h = 0.47 * cm
-
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
     table.setStyle(TableStyle([
@@ -151,17 +142,15 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
         ("FONTSIZE", (0, 0), (-1, -1), 8),
         ("ALIGN", (0, 0), (-1, -1), "CENTER"),
         ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
-        # Borde exterior un poco más fuerte
         ("BOX", (0, 0), (-1, -1), 1.0, colors.black),
     ]))
 
     tw, th = table.wrapOn(c, content_w, y)
     table_x = margin + (content_w - tw) / 2
     table.drawOn(c, table_x, y - th)
-
     y = y - th - 0.9 * cm
 
-    # Promedio en una caja
+    # Promedio
     box_h = 1.0 * cm
     c.setLineWidth(0.8)
     c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
@@ -169,13 +158,11 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.setFont("Helvetica-Bold", 10)
     prom_txt = f"{promedio:.3f}" if promedio is not None else ""
     c.drawString(margin + 1.0 * cm, y - 0.45 * cm, f"PESO PROMEDIO: {prom_txt}")
-
     y -= 1.6 * cm
 
-    # Firmas (dos cajas)
+    # Firmas
     sig_w = (content_w - 2.0 * cm) / 2
     sig_h = 2.0 * cm
-
     left_x = margin + 0.5 * cm
     right_x = left_x + sig_w + 1.0 * cm
 
@@ -191,34 +178,35 @@ def build_pdf(meta: dict, pesos: list[float | None], promedio: float | None) -> 
     c.drawString(left_x + 0.4 * cm, y - 1.2 * cm, meta.get("ejecutado_por", ""))
     c.drawString(right_x + 0.4 * cm, y - 1.2 * cm, meta.get("recibido_por", ""))
 
-    # Línea para firma
     c.setLineWidth(0.6)
     c.line(left_x + 0.4 * cm, y - 1.7 * cm, left_x + sig_w - 0.4 * cm, y - 1.7 * cm)
     c.line(right_x + 0.4 * cm, y - 1.7 * cm, right_x + sig_w - 0.4 * cm, y - 1.7 * cm)
 
     c.showPage()
     c.save()
-
     return buffer.getvalue()
 
 
-# -------------------- App --------------------
+# -------------------- State --------------------
 def init_state():
     if "pesos" not in st.session_state:
         st.session_state.pesos = [None] * 120
     if "idx" not in st.session_state:
-        st.session_state.idx = 0  # 0..119
+        st.session_state.idx = 0
     if "modo" not in st.session_state:
         st.session_state.modo = "Captura rápida"
+    # Campo de captura (VACÍO)
+    if "peso_actual" not in st.session_state:
+        st.session_state.peso_actual = None
 
 
+# -------------------- App --------------------
 def main():
     st.set_page_config(page_title="Verificación de Pesos", layout="wide")
     init_state()
 
     st.title("Verificación de pesos por contenedor")
 
-    # Formulario header - responsive natural
     c1, c2, c3 = st.columns([1, 2, 1])
     with c1:
         fecha = st.date_input("Fecha", value=date.today())
@@ -232,16 +220,15 @@ def main():
     st.session_state.modo = st.radio(
         "Modo de captura",
         ["Captura rápida", "Tabla (revisión/edición)"],
-        horizontal=True
+        horizontal=True,
     )
 
-    # Promedio
     promedio = compute_promedio(st.session_state.pesos)
     st.info(f"Peso promedio: {promedio:.3f}" if promedio is not None else "Peso promedio: —")
 
     st.divider()
 
-    # ----------- Captura rápida -----------
+    # ---------------- Captura rápida ----------------
     if st.session_state.modo == "Captura rápida":
         st.subheader("Captura rápida (escribe el peso y presiona Enter)")
 
@@ -252,39 +239,54 @@ def main():
         with colA:
             st.metric("N° actual", n_actual)
 
-        # IMPORTANTE: number_input en móvil abre teclado numérico
         with colB:
-            with st.form("fast_form", clear_on_submit=True):
-                # Valor actual por si quieren ver/editar
-                current_val = st.session_state.pesos[idx]
+            # Form: Enter guarda
+            with st.form("fast_form", clear_on_submit=False):
+                # input vacío = None (no 0.000)
                 peso = st.number_input(
                     "Peso",
                     min_value=0.0,
-                    step=0.001,          # permite 25.158
-                    format="%.3f",        # muestra 3 decimales
-                    value=float(current_val) if current_val is not None and not np.isnan(current_val) else 0.0
+                    step=0.001,
+                    format="%.3f",
+                    value=st.session_state.peso_actual if st.session_state.peso_actual is not None else 0.0,
+                    key="peso_input_internal",
                 )
+                # truco: si está "vacío" lo tratamos como None, NO guardamos 0 automático
                 submitted = st.form_submit_button("Guardar (Enter)")
 
             if submitted:
-                st.session_state.pesos[idx] = float(peso)
-                # Avanza automático
-                if st.session_state.idx < 119:
-                    st.session_state.idx += 1
-                st.rerun()
+                # Si el usuario no escribió nada y quedó en 0.000, no registramos por defecto
+                # (si realmente quieres permitir 0 como peso real, dime y lo ajusto)
+                if st.session_state.peso_actual is None and float(peso) == 0.0:
+                    st.warning("Escribe un peso antes de guardar.")
+                else:
+                    st.session_state.pesos[idx] = float(peso)
+                    # Avanza
+                    if st.session_state.idx < 119:
+                        st.session_state.idx += 1
+                    # LIMPIAR el campo para el siguiente peso
+                    st.session_state.peso_actual = None
+                    # también resetea el input interno
+                    st.session_state.peso_input_internal = 0.0
+                    st.rerun()
 
         with colC:
             b1, b2 = st.columns(2)
             with b1:
                 if st.button("⬆️", help="Anterior"):
                     st.session_state.idx = max(0, st.session_state.idx - 1)
+                    # al cambiar de fila, limpia input para que no arrastre
+                    st.session_state.peso_actual = None
+                    st.session_state.peso_input_internal = 0.0
                     st.rerun()
             with b2:
                 if st.button("⬇️", help="Siguiente"):
                     st.session_state.idx = min(119, st.session_state.idx + 1)
+                    st.session_state.peso_actual = None
+                    st.session_state.peso_input_internal = 0.0
                     st.rerun()
 
-        # Vista mini (últimos 10)
+        # Últimos 10 valores
         st.caption("Últimos valores ingresados")
         last_rows = []
         for i in range(max(0, st.session_state.idx - 10), st.session_state.idx):
@@ -292,7 +294,7 @@ def main():
         if last_rows:
             st.dataframe(pd.DataFrame(last_rows), use_container_width=True, hide_index=True)
 
-    # ----------- Tabla para revisar -----------
+    # ---------------- Tabla ----------------
     else:
         st.subheader("Tabla (revisión/edición)")
         df = pd.DataFrame({"N°": list(range(1, 121)), "PESO": st.session_state.pesos})
@@ -342,17 +344,14 @@ def main():
         promedio_now = compute_promedio(st.session_state.pesos)
         pdf_bytes = build_pdf(meta, st.session_state.pesos, promedio_now)
         filename = f"verificacion_pesos_{meta['fecha']}_{(meta['vehiculo'] or 'sin_vehiculo')}.pdf".replace(" ", "_")
-        st.download_button(
-            "Descargar PDF (A4)",
-            data=pdf_bytes,
-            file_name=filename,
-            mime="application/pdf",
-        )
+        st.download_button("Descargar PDF (A4)", data=pdf_bytes, file_name=filename, mime="application/pdf")
 
     with b3:
         if st.button("Limpiar formulario"):
             st.session_state.pesos = [None] * 120
             st.session_state.idx = 0
+            st.session_state.peso_actual = None
+            st.session_state.peso_input_internal = 0.0
             st.rerun()
 
 
