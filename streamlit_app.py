@@ -156,12 +156,25 @@ def df_to_pesos(df: pd.DataFrame):
 
 
 def draw_signature(c, png_bytes: bytes | None, x, y, w, h):
-    """Dibuja una firma PNG dentro del rectángulo definido."""
+    """
+    Dibuja una firma PNG dentro del rectángulo definido.
+    Para que se vea MÁS GRANDE, se dibuja ocupando casi todo el alto/ancho
+    del área disponible.
+    """
     if not png_bytes:
         return
     try:
         img = ImageReader(io.BytesIO(png_bytes))
-        c.drawImage(img, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto", anchor="c")
+        c.drawImage(
+            img,
+            x,
+            y,
+            width=w,
+            height=h,
+            preserveAspectRatio=True,
+            mask="auto",
+            anchor="c",
+        )
     except Exception:
         pass
 
@@ -216,7 +229,6 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     row_h = 0.47 * cm
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-    # centrado
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
         ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
@@ -281,9 +293,10 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     c.setFont(font_right, size_right)
     c.drawString(right_x + 0.4 * cm, y - 1.05 * cm, name_right)
 
-    # ✅ Firma digital dentro del cuadro (encima de la línea)
-    sig_area_h = 0.55 * cm
-    sig_area_y = (y - 1.50 * cm)
+    # ✅ Firma dentro del cuadro (más grande)
+    # Antes: 0.55cm alto. Ahora subimos a ~0.95cm y damos más ancho.
+    sig_area_h = 0.95 * cm
+    sig_area_y = (y - 1.62 * cm)  # un poco más abajo para que “calce” mejor
     sig_area_x_left = left_x + 0.4 * cm
     sig_area_x_right = right_x + 0.4 * cm
     sig_area_w = sig_w - 0.8 * cm
@@ -291,7 +304,7 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     draw_signature(c, meta.get("firma_ejecutado_png"), sig_area_x_left, sig_area_y, sig_area_w, sig_area_h)
     draw_signature(c, meta.get("firma_recibido_png"), sig_area_x_right, sig_area_y, sig_area_w, sig_area_h)
 
-    # línea
+    # línea (debajo de la firma)
     c.setLineWidth(0.6)
     c.line(left_x + 0.4 * cm, y - 1.55 * cm, left_x + sig_w - 0.4 * cm, y - 1.55 * cm)
     c.line(right_x + 0.4 * cm, y - 1.55 * cm, right_x + sig_w - 0.4 * cm, y - 1.55 * cm)
@@ -431,10 +444,8 @@ def on_clear():
     st.session_state.fast_info = ""
     st.session_state.table_df = pesos_to_df(st.session_state.pesos)
     st.session_state.registro_id = str(uuid.uuid4())
-    # ✅ limpiar firmas
     st.session_state.firma_ejecutado_png = None
     st.session_state.firma_recibido_png = None
-    # limpiar canvas (por si quedaba dibujado)
     st.session_state.pop("canvas_firma_ejecutado", None)
     st.session_state.pop("canvas_firma_recibido", None)
 
@@ -620,7 +631,6 @@ def main():
         "viaje": viaje.strip(),
         "ejecutado_por": ejecutado_por.strip(),
         "recibido_por": recibido_por.strip(),
-        # ✅ firmas para PDF
         "firma_ejecutado_png": st.session_state.firma_ejecutado_png,
         "firma_recibido_png": st.session_state.firma_recibido_png,
     }
