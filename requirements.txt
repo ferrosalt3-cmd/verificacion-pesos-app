@@ -3,3 +3,5 @@ gspread
 google-auth
 pandas
 reportlab
+streamlit-drawable-canvas
+Pillow
