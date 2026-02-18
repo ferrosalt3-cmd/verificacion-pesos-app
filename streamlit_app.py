@@ -12,11 +12,15 @@ from zoneinfo import ZoneInfo  # ✅ hora Lima
 import gspread
 from google.oauth2.service_account import Credentials
 
+from PIL import Image
+from streamlit_drawable_canvas import st_canvas
+
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
 from reportlab.lib.units import cm
 from reportlab.lib import colors
 from reportlab.platypus import Table, TableStyle
+from reportlab.lib.utils import ImageReader
 
 
 APP_TITLE = "VERIFICACIÓN DE PESOS POR CONTENEDOR"
@@ -151,6 +155,17 @@ def df_to_pesos(df: pd.DataFrame):
     return pd.to_numeric(df["PESO"], errors="coerce").tolist()
 
 
+def draw_signature(c, png_bytes: bytes | None, x, y, w, h):
+    """Dibuja una firma PNG dentro del rectángulo definido."""
+    if not png_bytes:
+        return
+    try:
+        img = ImageReader(io.BytesIO(png_bytes))
+        c.drawImage(img, x, y, width=w, height=h, preserveAspectRatio=True, mask="auto", anchor="c")
+    except Exception:
+        pass
+
+
 # =========================
 # PDF PRO + MULTIPÁGINA (120 por hoja)
 # =========================
@@ -201,7 +216,7 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     row_h = 0.47 * cm
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
-    # ✅ centrado y ordenado
+    # centrado
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
         ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
@@ -266,6 +281,17 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     c.setFont(font_right, size_right)
     c.drawString(right_x + 0.4 * cm, y - 1.05 * cm, name_right)
 
+    # ✅ Firma digital dentro del cuadro (encima de la línea)
+    sig_area_h = 0.55 * cm
+    sig_area_y = (y - 1.50 * cm)
+    sig_area_x_left = left_x + 0.4 * cm
+    sig_area_x_right = right_x + 0.4 * cm
+    sig_area_w = sig_w - 0.8 * cm
+
+    draw_signature(c, meta.get("firma_ejecutado_png"), sig_area_x_left, sig_area_y, sig_area_w, sig_area_h)
+    draw_signature(c, meta.get("firma_recibido_png"), sig_area_x_right, sig_area_y, sig_area_w, sig_area_h)
+
+    # línea
     c.setLineWidth(0.6)
     c.line(left_x + 0.4 * cm, y - 1.55 * cm, left_x + sig_w - 0.4 * cm, y - 1.55 * cm)
     c.line(right_x + 0.4 * cm, y - 1.55 * cm, right_x + sig_w - 0.4 * cm, y - 1.55 * cm)
@@ -297,7 +323,7 @@ def build_pdf_multi(meta: dict, pesos: list[float | None]) -> bytes:
 # =========================
 def init_state():
     if "pesos" not in st.session_state:
-        st.session_state.pesos = []  # infinito
+        st.session_state.pesos = []
     if "idx" not in st.session_state:
         st.session_state.idx = 0
     if "modo" not in st.session_state:
@@ -319,11 +345,16 @@ def init_state():
     if "last_saved_payload" not in st.session_state:
         st.session_state.last_saved_payload = None
 
-    # mensajes guardado
     if "save_status" not in st.session_state:
-        st.session_state.save_status = None  # "ok" | "error"
+        st.session_state.save_status = None
     if "save_message" not in st.session_state:
         st.session_state.save_message = ""
+
+    # ✅ firmas
+    if "firma_ejecutado_png" not in st.session_state:
+        st.session_state.firma_ejecutado_png = None
+    if "firma_recibido_png" not in st.session_state:
+        st.session_state.firma_recibido_png = None
 
 
 # =========================
@@ -335,7 +366,7 @@ def clear_save_notice():
 
 
 def on_fast_save():
-    clear_save_notice()  # ✅ borra aviso al iniciar nuevo registro
+    clear_save_notice()
     st.session_state.fast_error = ""
     st.session_state.fast_info = ""
 
@@ -346,7 +377,6 @@ def on_fast_save():
 
     idx = st.session_state.idx
 
-    # escribir en idx (creciendo infinito)
     if idx == len(st.session_state.pesos):
         st.session_state.pesos.append(float(val))
     elif idx < len(st.session_state.pesos):
@@ -362,7 +392,7 @@ def on_fast_save():
 
 
 def on_repeat_last():
-    clear_save_notice()  # ✅ borra aviso al iniciar nuevo registro
+    clear_save_notice()
     st.session_state.fast_error = ""
     st.session_state.fast_info = ""
 
@@ -387,7 +417,7 @@ def on_repeat_last():
 
 
 def on_apply_table():
-    clear_save_notice()  # ✅ si editan tabla, también borra aviso
+    clear_save_notice()
     df = st.session_state.table_df.copy()
     st.session_state.pesos = df_to_pesos(df)
     st.session_state.idx = min(st.session_state.idx, len(st.session_state.pesos))
@@ -401,6 +431,12 @@ def on_clear():
     st.session_state.fast_info = ""
     st.session_state.table_df = pesos_to_df(st.session_state.pesos)
     st.session_state.registro_id = str(uuid.uuid4())
+    # ✅ limpiar firmas
+    st.session_state.firma_ejecutado_png = None
+    st.session_state.firma_recibido_png = None
+    # limpiar canvas (por si quedaba dibujado)
+    st.session_state.pop("canvas_firma_ejecutado", None)
+    st.session_state.pop("canvas_firma_recibido", None)
 
 
 # =========================
@@ -424,7 +460,6 @@ def main():
 
     st.divider()
 
-    # ✅ Mantener modos como antes
     st.session_state.modo = st.radio(
         "Modo de captura",
         ["Captura rápida", "Tabla (revisión/edición)"],
@@ -452,7 +487,6 @@ def main():
                 with cbtn2:
                     st.form_submit_button("Repetir último", on_click=on_repeat_last)
 
-            # Teclado numérico + focus
             components.html(
                 """
                 <script>
@@ -526,6 +560,58 @@ def main():
     with col2:
         recibido_por = st.text_input("Recibido por")
 
+    # ✅ Firmas (dibujar)
+    st.subheader("Firmas")
+    f1, f2 = st.columns(2)
+
+    with f1:
+        st.caption("Firma Ejecutado")
+        canvas_e = st_canvas(
+            fill_color="rgba(255, 255, 255, 0)",
+            stroke_width=3,
+            stroke_color="#000000",
+            background_color="#FFFFFF",
+            height=180,
+            width=420,
+            drawing_mode="freedraw",
+            key="canvas_firma_ejecutado",
+        )
+        if canvas_e.image_data is not None:
+            img = Image.fromarray(canvas_e.image_data.astype("uint8"))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            st.session_state.firma_ejecutado_png = buf.getvalue()
+
+        if st.button("Borrar firma Ejecutado"):
+            st.session_state.firma_ejecutado_png = None
+            st.session_state.pop("canvas_firma_ejecutado", None)
+            st.rerun()
+
+    with f2:
+        st.caption("Firma Recibido")
+        canvas_r = st_canvas(
+            fill_color="rgba(255, 255, 255, 0)",
+            stroke_width=3,
+            stroke_color="#000000",
+            background_color="#FFFFFF",
+            height=180,
+            width=420,
+            drawing_mode="freedraw",
+            key="canvas_firma_recibido",
+        )
+        if canvas_r.image_data is not None:
+            img = Image.fromarray(canvas_r.image_data.astype("uint8"))
+            buf = io.BytesIO()
+            img.save(buf, format="PNG")
+            st.session_state.firma_recibido_png = buf.getvalue()
+
+        if st.button("Borrar firma Recibido"):
+            st.session_state.firma_recibido_png = None
+            st.session_state.pop("canvas_firma_recibido", None)
+            st.rerun()
+
+    st.divider()
+
     meta = {
         "registro_id": st.session_state.registro_id,
         "fecha": str(fecha),
@@ -534,9 +620,11 @@ def main():
         "viaje": viaje.strip(),
         "ejecutado_por": ejecutado_por.strip(),
         "recibido_por": recibido_por.strip(),
+        # ✅ firmas para PDF
+        "firma_ejecutado_png": st.session_state.firma_ejecutado_png,
+        "firma_recibido_png": st.session_state.firma_recibido_png,
     }
 
-    # ✅ mensaje claro guardado
     if st.session_state.save_status == "ok":
         st.success(st.session_state.save_message)
     elif st.session_state.save_status == "error":
