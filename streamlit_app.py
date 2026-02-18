@@ -160,9 +160,11 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     margin = 1.2 * cm
     content_w = width - 2 * margin
 
+    # Marco externo
     c.setLineWidth(1.0)
     c.rect(margin, margin, content_w, height - 2 * margin)
 
+    # Header box
     header_h = 2.7 * cm
     c.setLineWidth(0.8)
     c.rect(margin, height - margin - header_h, content_w, header_h)
@@ -173,14 +175,17 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     c.setLineWidth(0.6)
     c.line(margin, height - margin - 1.25 * cm, margin + content_w, height - margin - 1.25 * cm)
 
+    # Textos header
     c.setFont("Helvetica", 10)
     c.drawString(margin + 0.5 * cm, height - margin - 1.95 * cm, f"FECHA: {meta.get('fecha','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 1.95 * cm, f"PRODUCTO: {meta.get('producto','')}")
     c.drawString(margin + 0.5 * cm, height - margin - 2.35 * cm, f"VEHÍCULO / CONTENEDOR: {meta.get('vehiculo','')}")
     c.drawString(margin + 7.5 * cm, height - margin - 2.35 * cm, f"VIAJE: {meta.get('viaje','')}")
 
+    # Separación entre header y tabla
     y = height - margin - header_h - 0.9 * cm
 
+    # Tabla 120 = 40 filas x 3 bloques
     data = [["N°", "PESO", "N°", "PESO", "N°", "PESO"]]
     pesos_120 = (pesos_chunk + [None] * 120)[:120]
 
@@ -196,6 +201,7 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     row_h = 0.47 * cm
     table = Table(data, colWidths=col_widths, rowHeights=row_h)
 
+    # ✅ centrado y ordenado
     table.setStyle(TableStyle([
         ("GRID", (0, 0), (-1, -1), 0.6, colors.black),
         ("BACKGROUND", (0, 0), (-1, 0), colors.whitesmoke),
@@ -211,6 +217,7 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
     table.drawOn(c, table_x, y - th)
     y = y - th - 1.0 * cm
 
+    # Promedio global
     box_h = 1.0 * cm
     c.setLineWidth(0.8)
     c.rect(margin + 0.5 * cm, y - box_h + 0.2 * cm, content_w - 1.0 * cm, box_h)
@@ -221,6 +228,7 @@ def draw_pdf_page(c: canvas.Canvas, meta: dict, pesos_chunk: list[float | None],
 
     y -= 1.25 * cm
 
+    # Firmas dentro del marco
     inner_padding = 1.0 * cm
     inner_left = margin + inner_padding
     inner_right = margin + content_w - inner_padding
@@ -289,7 +297,7 @@ def build_pdf_multi(meta: dict, pesos: list[float | None]) -> bytes:
 # =========================
 def init_state():
     if "pesos" not in st.session_state:
-        st.session_state.pesos = []
+        st.session_state.pesos = []  # infinito
     if "idx" not in st.session_state:
         st.session_state.idx = 0
     if "modo" not in st.session_state:
@@ -311,7 +319,7 @@ def init_state():
     if "last_saved_payload" not in st.session_state:
         st.session_state.last_saved_payload = None
 
-    # ✅ nuevos estados para mensajes claros
+    # mensajes guardado
     if "save_status" not in st.session_state:
         st.session_state.save_status = None  # "ok" | "error"
     if "save_message" not in st.session_state:
@@ -321,7 +329,13 @@ def init_state():
 # =========================
 # Callbacks
 # =========================
+def clear_save_notice():
+    st.session_state.save_status = None
+    st.session_state.save_message = ""
+
+
 def on_fast_save():
+    clear_save_notice()  # ✅ borra aviso al iniciar nuevo registro
     st.session_state.fast_error = ""
     st.session_state.fast_info = ""
 
@@ -332,6 +346,7 @@ def on_fast_save():
 
     idx = st.session_state.idx
 
+    # escribir en idx (creciendo infinito)
     if idx == len(st.session_state.pesos):
         st.session_state.pesos.append(float(val))
     elif idx < len(st.session_state.pesos):
@@ -347,6 +362,7 @@ def on_fast_save():
 
 
 def on_repeat_last():
+    clear_save_notice()  # ✅ borra aviso al iniciar nuevo registro
     st.session_state.fast_error = ""
     st.session_state.fast_info = ""
 
@@ -371,6 +387,7 @@ def on_repeat_last():
 
 
 def on_apply_table():
+    clear_save_notice()  # ✅ si editan tabla, también borra aviso
     df = st.session_state.table_df.copy()
     st.session_state.pesos = df_to_pesos(df)
     st.session_state.idx = min(st.session_state.idx, len(st.session_state.pesos))
@@ -407,6 +424,7 @@ def main():
 
     st.divider()
 
+    # ✅ Mantener modos como antes
     st.session_state.modo = st.radio(
         "Modo de captura",
         ["Captura rápida", "Tabla (revisión/edición)"],
@@ -434,6 +452,7 @@ def main():
                 with cbtn2:
                     st.form_submit_button("Repetir último", on_click=on_repeat_last)
 
+            # Teclado numérico + focus
             components.html(
                 """
                 <script>
@@ -517,7 +536,7 @@ def main():
         "recibido_por": recibido_por.strip(),
     }
 
-    # ✅ Mensaje claro de guardado (si existe)
+    # ✅ mensaje claro guardado
     if st.session_state.save_status == "ok":
         st.success(st.session_state.save_message)
     elif st.session_state.save_status == "error":
@@ -527,10 +546,6 @@ def main():
 
     with b1:
         if st.button("Guardar en Google Sheets", type="primary"):
-            # reset mensajes
-            st.session_state.save_status = None
-            st.session_state.save_message = ""
-
             if not meta["producto"] or not meta["vehiculo"]:
                 st.session_state.save_status = "error"
                 st.session_state.save_message = "Completa PRODUCTO y VEHÍCULO/CONTENEDOR antes de guardar."
@@ -568,7 +583,7 @@ def main():
             usando_ultimo = True
 
         if not pesos_para_pdf and not st.session_state.last_saved_payload:
-            st.info("No hay datos para PDF todavía. Ingresa pesos y guarda, o registra primero.")
+            st.info("No hay datos para PDF todavía.")
             pdf_bytes = build_pdf_multi(meta_para_pdf, [])
         else:
             pdf_bytes = build_pdf_multi(meta_para_pdf, pesos_para_pdf)
@@ -589,8 +604,7 @@ def main():
             if cc1.button("Sí, limpiar"):
                 st.session_state.confirm_clear = False
                 on_clear()
-                st.session_state.save_status = None
-                st.session_state.save_message = ""
+                clear_save_notice()
                 st.rerun()
             if cc2.button("No"):
                 st.session_state.confirm_clear = False
